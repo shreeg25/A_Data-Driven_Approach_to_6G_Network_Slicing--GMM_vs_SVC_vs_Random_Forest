@@ -6,20 +6,22 @@
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <style>
-        body { background-color: #121212; color: #f0f0f0; padding-bottom: 100px; font-family: 'Segoe UI', sans-serif; }
-        .card { background-color: #1e1e1e; border: 1px solid #333; box-shadow: 0 4px 8px rgba(0,0,0,0.4); }
+        body { background-color: #0f0f0f; color: #e0e0e0; padding-bottom: 100px; font-family: 'Segoe UI', sans-serif; }
+        .card { background-color: #1a1a1a; border: 1px solid #333; box-shadow: 0 4px 12px rgba(0,0,0,0.5); }
         h3, h5, h6 { color: #fff; }
 
         /* Metric Cards */
         .metric-card {
-            border-left: 4px solid;
-            background: #252525; padding: 15px; text-align: center; height: 100%;
+            border-left: 5px solid;
+            background: #252525; padding: 20px; text-align: center; height: 100%;
             display: flex; flex-direction: column; justify-content: center;
+            transition: transform 0.2s;
         }
-        .metric-label { font-size: 0.8rem; text-transform: uppercase; color: #aaa; letter-spacing: 1px; }
-        .metric-val { font-size: 1.6rem; font-weight: bold; margin-top: 5px; }
+        .metric-card:hover { transform: translateY(-5px); }
+        .metric-label { font-size: 0.85rem; text-transform: uppercase; color: #888; letter-spacing: 1px; }
+        .metric-val { font-size: 1.8rem; font-weight: bold; margin-top: 10px; }
 
-        /* Metric Colors */
+        /* Colors */
         .c-blue { border-color: #3498db; color: #3498db; }
         .c-yellow { border-color: #f1c40f; color: #f1c40f; }
         .c-red { border-color: #e74c3c; color: #e74c3c; }
@@ -28,27 +30,34 @@
         /* Progress Overlay */
         #progressOverlay {
             display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%;
-            background: rgba(0,0,0,0.95); z-index: 9999;
+            background: rgba(0,0,0,0.92); z-index: 9999;
             flex-direction: column; align-items: center; justify-content: center;
         }
-        .progress { width: 60%; height: 25px; background-color: #333; }
+        .progress-wrapper { width: 50%; max-width: 600px; }
     </style>
 </head>
 <body>
 
 <div id="progressOverlay">
-    <h3 class="mb-3 text-light">AI Training in Progress</h3>
-    <div class="progress mb-2">
-        <div id="progressBar" class="progress-bar progress-bar-striped progress-bar-animated bg-success" role="progressbar" style="width: 0%"></div>
+    <h3 class="mb-3 text-light">🤖 Training AI Model...</h3>
+    
+    <div class="progress-wrapper">
+        <div class="progress mb-2" style="height: 25px; background-color: #333;">
+            <div id="progressBar" class="progress-bar progress-bar-striped progress-bar-animated bg-success" 
+                 role="progressbar" style="width: 0%">0%</div>
+        </div>
+        <div class="d-flex justify-content-between text-muted small">
+            <span id="progressStatus">Initializing...</span>
+            <span id="progressEta">ETA: -- s</span>
+        </div>
     </div>
-    <p id="progressText" class="text-info">Initializing...</p>
 </div>
 
 <div class="container mt-4">
     <div class="d-flex justify-content-between align-items-center mb-4">
         <div>
             <h3>📡 6G Network Intelligent Controller</h3>
-            <small class="text-muted">QoS Monitoring & Slice Classification</small>
+            <small class="text-muted">Real-Time Slice Optimization & Security</small>
         </div>
         <span class="badge bg-secondary p-2" id="statusBadge">System Idle</span>
     </div>
@@ -65,19 +74,24 @@
                 <button class="btn btn-success w-100 fw-bold" id="simBtn" onclick="toggleSim()" disabled>▶ Start Simulation</button>
             </div>
             <div class="col-md-2">
-                <button class="btn btn-primary w-100 fw-bold" id="resBtn" onclick="startTraining()" disabled>📊 Analyze Results</button>
+                <button class="btn btn-primary w-100 fw-bold" id="resBtn" onclick="initiateTraining()" disabled>📊 Analyze Results</button>
             </div>
         </div>
     </div>
 
     <div class="card p-3 mb-4">
-        <h6 class="text-muted small">REAL-TIME TRAFFIC (PACKETS/SEC)</h6>
+        <h6 class="text-muted small">LIVE TRAFFIC STREAM (PACKETS/SEC)</h6>
         <div style="height: 120px;"><canvas id="liveChart"></canvas></div>
     </div>
 
     <div id="results" style="display:none;">
         
-        <h5 class="border-bottom border-secondary pb-2 mb-3">Network QoS Metrics</h5>
+        <div class="alert alert-success d-flex align-items-center mb-4">
+            <span class="me-2">💾</span>
+            <div>Results successfully archived to: <strong id="folderPath" class="text-decoration-underline"></strong></div>
+        </div>
+
+        <h5 class="border-bottom border-secondary pb-2 mb-3">Network QoS Performance</h5>
         <div class="row g-3 mb-4">
             <div class="col-md-4">
                 <div class="metric-card c-blue">
@@ -87,7 +101,7 @@
             </div>
             <div class="col-md-4">
                 <div class="metric-card c-yellow">
-                    <div class="metric-label">Latency</div>
+                    <div class="metric-label">Avg Latency</div>
                     <div class="metric-val" id="valLat">--</div>
                 </div>
             </div>
@@ -99,7 +113,7 @@
             </div>
         </div>
 
-        <h5 class="border-bottom border-secondary pb-2 mb-3">AI Model Performance</h5>
+        <h5 class="border-bottom border-secondary pb-2 mb-3">AI Model Accuracy</h5>
         <div class="row g-3 mb-4">
             <div class="col-md-3">
                 <div class="metric-card c-green">
@@ -109,7 +123,7 @@
             </div>
             <div class="col-md-3">
                 <div class="metric-card c-green">
-                    <div class="metric-label">F1 Score</div>
+                    <div class="metric-label">F1-Score</div>
                     <div class="metric-val" id="valF1">--</div>
                 </div>
             </div>
@@ -122,7 +136,7 @@
         </div>
 
         <div class="card p-3">
-            <h6 class="text-muted small">TRAFFIC CLUSTERING (SLICE SEPARATION)</h6>
+            <h6 class="text-muted small">SLICE CLUSTERING VISUALIZATION</h6>
             <div style="height: 250px;"><canvas id="scatterChart"></canvas></div>
         </div>
     </div>
@@ -131,6 +145,7 @@
 <script>
     let liveChart, scatterChart, simInterval, pollInterval;
     let isRunning = false;
+    let etaCounter = 0;
 
     window.onload = function() {
         liveChart = new Chart(document.getElementById('liveChart'), {
@@ -164,7 +179,6 @@
     function toggleSim() {
         let btn = document.getElementById('simBtn');
         if(!isRunning) {
-            // START
             isRunning = true;
             btn.innerText = "⏹ Stop & Train";
             btn.className = "btn btn-danger w-100 fw-bold";
@@ -186,74 +200,82 @@
                 }
             }, 80);
         } else {
-            // STOP
             isRunning = false;
             clearInterval(simInterval);
             btn.innerText = "▶ Restart Sim";
             btn.className = "btn btn-success w-100 fw-bold";
             document.getElementById('resBtn').disabled = false;
-            document.getElementById('statusBadge').innerText = "Simulation Paused";
+            document.getElementById('statusBadge').innerText = "Paused";
             document.getElementById('statusBadge').className = "badge bg-info text-dark p-2";
-            
-            // Auto-trigger training
-            startTraining();
+            initiateTraining();
         }
     }
 
-    async function startTraining() {
-        // 1. Show Progress Overlay
-        document.getElementById('progressOverlay').style.display = 'flex';
-        document.getElementById('progressBar').style.width = '0%';
+    async function initiateTraining() {
+        // 1. Start Background Task
+        let startRes = await fetch('/start_training', {method:'POST'});
+        let startData = await startRes.json();
         
-        // 2. Start Polling for Progress
+        if(startData.status === 'error') return alert(startData.message);
+
+        // 2. Show Overlay
+        document.getElementById('progressOverlay').style.display = 'flex';
+        
+        // 3. Poll for Updates
         pollInterval = setInterval(async () => {
-            let res = await fetch('/status');
+            let res = await fetch('/get_status');
             let data = await res.json();
+            
+            // Update UI
             document.getElementById('progressBar').style.width = data.progress + '%';
-            document.getElementById('progressText').innerText = data.status;
+            document.getElementById('progressBar').innerText = data.progress + '%';
+            document.getElementById('progressStatus').innerText = data.status;
+            
+            // Update ETA
+            if(data.eta > 0) {
+                document.getElementById('progressEta').innerText = "ETA: ~" + data.eta + " s";
+                if(data.progress < 90) data.eta = (data.eta - 0.2).toFixed(1); // Client-side countdown
+            }
+
+            // Check completion
+            if(data.status === 'Complete' && data.result) {
+                finishTraining(data.result);
+            } else if (data.status === 'Error') {
+                clearInterval(pollInterval);
+                document.getElementById('progressOverlay').style.display = 'none';
+                alert("Training Failed: " + data.error);
+            }
         }, 200);
+    }
 
-        // 3. Trigger Training
-        try {
-            let fd = new FormData(); fd.append('clusters', 3);
-            let res = await fetch('/train_model', {method:'POST', body:fd});
-            let data = await res.json();
-            
-            clearInterval(pollInterval);
-            document.getElementById('progressOverlay').style.display = 'none';
+    function finishTraining(result) {
+        clearInterval(pollInterval);
+        document.getElementById('progressOverlay').style.display = 'none';
+        document.getElementById('results').style.display = 'block';
 
-            if(data.status === 'error') return alert(data.message);
+        // Fill Metrics
+        document.getElementById('valThru').innerText = result.throughput;
+        document.getElementById('valLat').innerText = result.latency;
+        document.getElementById('valLoss').innerText = result.loss;
+        document.getElementById('valAcc').innerText = result.accuracy;
+        document.getElementById('valF1').innerText = result.f1_score;
+        document.getElementById('cmImg').src = "data:image/png;base64," + result.cm_image;
+        document.getElementById('folderPath').innerText = result.folder;
 
-            document.getElementById('results').style.display = 'block';
-
-            // Fill Metrics
-            document.getElementById('valThru').innerText = data.throughput;
-            document.getElementById('valLat').innerText = data.latency;
-            document.getElementById('valLoss').innerText = data.loss;
-            document.getElementById('valAcc').innerText = data.accuracy;
-            document.getElementById('valF1').innerText = data.f1_score;
-            document.getElementById('cmImg').src = "data:image/png;base64," + data.cm_image;
-
-            // Fill Scatter
-            let clusters = {};
-            data.scatter.forEach(p => {
-                if(!clusters[p.c]) clusters[p.c] = [];
-                clusters[p.c].push({x: p.x, y: p.y});
-            });
-            const colors = ['#3498db', '#e74c3c', '#f1c40f'];
-            scatterChart.data.datasets = Object.keys(clusters).map((k, i) => ({
-                label: `Slice ${k}`, data: clusters[k], backgroundColor: colors[i%3]
-            }));
-            scatterChart.update();
-            
-            document.getElementById('statusBadge').innerText = "Analysis Complete";
-            document.getElementById('statusBadge').className = "badge bg-success p-2";
-
-        } catch(e) {
-            clearInterval(pollInterval);
-            document.getElementById('progressOverlay').style.display = 'none';
-            alert("Error: " + e);
-        }
+        // Fill Scatter
+        let clusters = {};
+        result.scatter.forEach(p => {
+            if(!clusters[p.c]) clusters[p.c] = [];
+            clusters[p.c].push({x: p.x, y: p.y});
+        });
+        const colors = ['#3498db', '#e74c3c', '#f1c40f'];
+        scatterChart.data.datasets = Object.keys(clusters).map((k, i) => ({
+            label: `Slice ${k}`, data: clusters[k], backgroundColor: colors[i%3]
+        }));
+        scatterChart.update();
+        
+        document.getElementById('statusBadge').innerText = "Analysis Complete";
+        document.getElementById('statusBadge').className = "badge bg-success p-2";
     }
 </script>
 </body>
