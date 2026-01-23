@@ -30,50 +30,46 @@ TRAINING_STATE = {
     "busy": False,
     "progress": 0,
     "status": "Idle",
-    "eta": "0.0", # Sent as string to ensure precision
+    "eta": "0.0",
     "result": None,
     "error": None
 }
 
 def run_training_task(df, save_root):
-    """Background Worker that updates ETA in real-time"""
+    """Background Worker with FORCED DELAYS for Visualization"""
     global TRAINING_STATE
     
     try:
-        # ESTIMATE TOTAL TIME (3s + 0.5s per 10k rows)
-        total_estimated_time = 3.0 + (len(df) / 10000) * 0.5
+        # 1. SETUP & ETA CALCULATION
+        rows = len(df)
+        # We enforce a minimum of 5 seconds for the UX
+        estimated_seconds = max(5.0, 3.0 + (rows / 20000))
         start_time = time.time()
         
-        # Helper to update ETA based on elapsed time
-        def update_eta():
+        def update_state(prog, status):
             elapsed = time.time() - start_time
-            remaining = max(0.0, total_estimated_time - elapsed)
+            remaining = max(0.0, estimated_seconds - elapsed)
+            TRAINING_STATE['progress'] = prog
+            TRAINING_STATE['status'] = status
             TRAINING_STATE['eta'] = f"{remaining:.1f}"
+            print(f">>> Progress: {prog}% | Status: {status} | ETA: {remaining:.1f}s")
 
-        # --- STEP 1: INITIALIZATION ---
-        TRAINING_STATE['progress'] = 5
-        TRAINING_STATE['status'] = f"Initializing ({len(df)} flows)..."
-        update_eta()
-        
+        update_state(5, f"Initializing ({rows} flows)...")
+        time.sleep(1.0) # Visual pause
+
         run_id = time.strftime("%Y%m%d-%H%M%S")
         save_dir = os.path.join(save_root, run_id)
         os.makedirs(save_dir, exist_ok=True)
-        time.sleep(0.5) 
 
-        # --- STEP 2: METRICS ---
-        TRAINING_STATE['progress'] = 20
-        TRAINING_STATE['status'] = "Calculating QoS Metrics..."
-        update_eta()
-        
+        # 2. QoS METRICS (10% - 30%)
+        update_state(10, "Calculating Throughput & Latency...")
         avg_thru = df['Throughput'].mean()
         avg_lat = df['Latency'].mean()
         avg_loss = df['Loss'].mean()
-        time.sleep(0.5)
+        time.sleep(1.0) # Visual pause
 
-        # --- STEP 3: TRAINING ---
-        TRAINING_STATE['progress'] = 40
-        TRAINING_STATE['status'] = "Training Neural Network..."
-        update_eta()
+        # 3. AI TRAINING (30% - 70%)
+        update_state(30, "Training Neural Network...")
         
         scaler = StandardScaler()
         X = df[['Size', 'Rate']].values
@@ -82,13 +78,11 @@ def run_training_task(df, save_root):
         gmm = GaussianMixture(n_components=3, random_state=42)
         gmm.fit(X_scaled)
         df['Cluster'] = gmm.predict(X_scaled)
-        time.sleep(1.0) # Simulating heavy compute for small files
-
-        # --- STEP 4: MAPPING ---
-        TRAINING_STATE['progress'] = 70
-        TRAINING_STATE['status'] = "Classifying Slices..."
-        update_eta()
         
+        update_state(60, "Classifying 6G Slices...")
+        time.sleep(1.0) # Visual pause
+
+        # Map Clusters
         cluster_map = {}
         for c in range(3):
             subset = df[df['Cluster'] == c]
@@ -98,32 +92,32 @@ def run_training_task(df, save_root):
                 cluster_map[c] = "Unknown"
         
         preds = df['Cluster'].map(cluster_map)
-        df['Predicted'] = preds
         
-        # --- STEP 5: EVALUATION & SAVING ---
-        TRAINING_STATE['progress'] = 90
-        TRAINING_STATE['status'] = "Generating Report..."
-        update_eta()
-        
+        # 4. EVALUATION (70% - 90%)
+        update_state(80, "Generating Accuracy Report...")
         acc = accuracy_score(df['Label'], preds)
         p, r, f1, _ = precision_recall_fscore_support(df['Label'], preds, average='weighted', zero_division=0)
         
-        # Save Confusion Matrix
+        # Generate Confusion Matrix
         fig = plt.figure(figsize=(6, 5))
         cm = confusion_matrix(df['Label'], preds)
         labels = sorted(df['Label'].unique())
         sns.heatmap(cm, annot=True, fmt='d', cmap='Blues', xticklabels=labels, yticklabels=labels)
         plt.title('Confusion Matrix')
         plt.tight_layout()
-        plt.savefig(os.path.join(save_dir, "confusion_matrix.png"))
         
         buf = io.BytesIO()
         plt.savefig(buf, format='png', dpi=100)
         plt.close(fig)
         cm_image = base64.b64encode(buf.getvalue()).decode()
         
-        # Save Data
+        # Save to Disk
         df.to_csv(os.path.join(save_dir, "processed_data.csv"), index=False)
+        plt.savefig(os.path.join(save_dir, "confusion_matrix.png"))
+        
+        # 5. FINALIZE (100%)
+        update_state(100, "Finalizing...")
+        time.sleep(0.5)
         
         TRAINING_STATE['result'] = {
             "throughput": f"{avg_thru:.2f} Mbps",
@@ -135,8 +129,6 @@ def run_training_task(df, save_root):
             "scatter": [{'x': float(r['Size']), 'y': float(r['Rate']), 'c': int(r['Cluster'])} for i,r in df.sample(min(800, len(df))).iterrows()],
             "folder": save_dir
         }
-        
-        TRAINING_STATE['progress'] = 100
         TRAINING_STATE['status'] = "Complete"
         TRAINING_STATE['eta'] = "0.0"
 
@@ -166,12 +158,12 @@ def upload_file():
             df = pd.read_csv(filepath)
             df.columns = df.columns.str.strip()
             
-            # AUTO-CORRECT COLUMNS for 'Book1.csv'
+            # AUTO-CORRECT COLUMNS
             if 'sMeanPktSz' in df.columns and 'SrcRate' in df.columns:
                 df['Size'] = df['sMeanPktSz']
                 df['Rate'] = df['SrcRate']
                 
-                # GENERATE MISSING METRICS
+                # METRICS GENERATION
                 df['Throughput'] = (df['Rate'] * df['Size'] * 8) / 1e6
                 df['Latency'] = 10 + (df['Rate'] / 50) + np.random.uniform(0, 5, len(df))
                 df['Loss'] = (df['Rate'] / (df['Rate'].max()+1)) * 5 * np.random.rand(len(df))
@@ -183,7 +175,6 @@ def upload_file():
                 ]
                 df['Label'] = np.select(conditions, ['eMBB', 'uRLLC', 'mMTC'], default='mMTC')
                 all_chunks.append(df)
-                
         except Exception as e:
             print(e)
 

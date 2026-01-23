@@ -29,30 +29,38 @@
             background: rgba(0,0,0,0.95); z-index: 9999;
             flex-direction: column; align-items: center; justify-content: center;
         }
-        .progress-container { width: 50%; max-width: 600px; text-align: center; }
+        .progress-container { width: 60%; max-width: 700px; text-align: center; }
         
-        /* ETA TEXT STYLING */
-        #progressEta {
-            font-size: 2.5rem; font-weight: bold; color: #ffc107; /* Bright Yellow */
-            margin-top: 20px; text-shadow: 0 0 10px rgba(255, 193, 7, 0.5);
+        /* ETA TEXT STYLING - IMPOSSIBLE TO MISS */
+        .eta-box {
+            background: #222; border: 2px solid #ffc107; padding: 15px;
+            margin-top: 20px; border-radius: 10px;
         }
+        #progressEta {
+            font-size: 3.5rem; font-weight: 800; color: #ffc107; /* Neon Yellow */
+            line-height: 1; text-shadow: 0 0 15px rgba(255, 193, 7, 0.6);
+        }
+        .eta-label { font-size: 1rem; color: #aaa; text-transform: uppercase; letter-spacing: 2px; }
     </style>
 </head>
 <body>
 
 <div id="progressOverlay">
-    <h3 class="mb-4">🤖 Processing Data...</h3>
+    <h3 class="mb-4 text-white">🚀 Training AI Model...</h3>
     
     <div class="progress-container">
-        <p id="progressStatus" class="text-info mb-2">Initializing...</p>
+        <p id="progressStatus" class="text-info mb-2 fs-5">Initializing...</p>
         
-        <div class="progress" style="height: 25px; background-color: #333;">
+        <div class="progress mb-4" style="height: 30px; background-color: #333;">
             <div id="progressBar" class="progress-bar progress-bar-striped progress-bar-animated bg-success" 
-                 role="progressbar" style="width: 0%">0%</div>
+                 role="progressbar" style="width: 0%; font-weight:bold;">0%</div>
         </div>
 
-        <div id="progressEta">ETA: -- s</div>
-        <small class="text-muted">Estimated Time Remaining</small>
+        <div class="eta-box">
+            <div class="eta-label">Estimated Time Remaining</div>
+            <div id="progressEta">--</div>
+            <div class="text-muted">SECONDS</div>
+        </div>
     </div>
 </div>
 
@@ -201,8 +209,10 @@
             document.getElementById('progressBar').innerText = data.progress + '%';
             document.getElementById('progressStatus').innerText = data.status;
             
-            // UPDATE ETA (Server calculates it now)
-            document.getElementById('progressEta').innerText = "ETA: " + data.eta + " s";
+            // UPDATE ETA
+            // If the server sends "Calculating..." or string text, we show it
+            // If it sends a number like "4.5", we show that.
+            document.getElementById('progressEta').innerText = data.eta;
 
             if(data.status === 'Complete' && data.result) {
                 clearInterval(pollInterval);
