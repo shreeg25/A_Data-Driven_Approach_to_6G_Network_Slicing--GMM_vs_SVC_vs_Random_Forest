@@ -1,0 +1,250 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>6G Full Metrics Dashboard</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <style>
+        /* Dark Theme */
+        body { background-color: #121212; color: #ecf0f1; padding-bottom: 80px; }
+        .card { background-color: #1e1e1e; border: 1px solid #333; margin-bottom: 20px; box-shadow: 0 4px 6px rgba(0,0,0,0.3); }
+        h3, h5 { color: #fff; }
+        
+        /* Metric Cards */
+        .metric-card {
+            border-left: 5px solid;
+            padding: 15px;
+            text-align: center;
+            background: #252525;
+            height: 100%;
+            display: flex; flex-direction: column; justify-content: center;
+        }
+        .metric-title { font-size: 0.85rem; text-transform: uppercase; color: #aaa; letter-spacing: 1px; }
+        .metric-value { font-size: 1.8rem; font-weight: bold; margin-top: 5px; }
+        
+        /* Color Coding */
+        .border-blue { border-color: #3498db; color: #3498db; }
+        .border-yellow { border-color: #f1c40f; color: #f1c40f; }
+        .border-red { border-color: #e74c3c; color: #e74c3c; }
+        .border-green { border-color: #2ecc71; color: #2ecc71; }
+
+        /* Loading Overlay */
+        #loader {
+            display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+            background: rgba(0,0,0,0.9); z-index: 9999;
+            flex-direction: column; align-items: center; justify-content: center;
+        }
+    </style>
+</head>
+<body>
+
+<div id="loader">
+    <div class="spinner-border text-primary" style="width: 4rem; height: 4rem;"></div>
+    <h3 class="mt-4 text-primary">Computing Metrics...</h3>
+    <p class="text-white-50">Calculating Latency, Loss, & Accuracy</p>
+</div>
+
+<div class="container mt-4">
+    <div class="d-flex justify-content-between align-items-center mb-4">
+        <div>
+            <h3>📡 6G Network Intelligent Controller</h3>
+            <small class="text-muted">Real-Time QoS Monitoring & Slice Classification</small>
+        </div>
+        <span class="badge bg-secondary p-2" id="statusBadge">System Idle</span>
+    </div>
+
+    <div class="card p-4">
+        <div class="row g-3">
+            <div class="col-md-5">
+                <input type="file" class="form-control bg-dark text-light border-secondary" id="fileInput" multiple>
+            </div>
+            <div class="col-md-2">
+                <button class="btn btn-secondary w-100 fw-bold" onclick="upload()">1. Load Data</button>
+            </div>
+            <div class="col-md-3">
+                <button class="btn btn-success w-100 fw-bold" id="simBtn" onclick="toggleSim()" disabled>▶ Start Simulation</button>
+            </div>
+            <div class="col-md-2">
+                <button class="btn btn-primary w-100 fw-bold" id="resBtn" onclick="generate()" disabled>📊 Show Results</button>
+            </div>
+        </div>
+    </div>
+
+    <div class="card p-3">
+        <h6 class="text-muted small">LIVE PACKET RATE STREAM</h6>
+        <div style="height: 120px;"><canvas id="liveChart"></canvas></div>
+    </div>
+
+    <div id="results" style="display:none;">
+        
+        <h5 class="border-bottom border-secondary pb-2 mb-3">Network QoS Metrics</h5>
+        <div class="row g-3 mb-4">
+            <div class="col-md-4">
+                <div class="metric-card border-blue">
+                    <div class="metric-title">Throughput</div>
+                    <div class="metric-value" id="valThru">--</div>
+                </div>
+            </div>
+            <div class="col-md-4">
+                <div class="metric-card border-yellow">
+                    <div class="metric-title">Avg Latency</div>
+                    <div class="metric-value" id="valLat">--</div>
+                </div>
+            </div>
+            <div class="col-md-4">
+                <div class="metric-card border-red">
+                    <div class="metric-title">Packet Loss</div>
+                    <div class="metric-value" id="valLoss">--</div>
+                </div>
+            </div>
+        </div>
+
+        <h5 class="border-bottom border-secondary pb-2 mb-3">AI Model Performance</h5>
+        <div class="row g-3 mb-4">
+            <div class="col-md-3">
+                <div class="metric-card border-green">
+                    <div class="metric-title">Accuracy</div>
+                    <div class="metric-value" id="valAcc">--</div>
+                </div>
+            </div>
+            <div class="col-md-3">
+                <div class="metric-card border-green">
+                    <div class="metric-title">F1-Score</div>
+                    <div class="metric-value" id="valF1">--</div>
+                </div>
+            </div>
+            <div class="col-md-6">
+                <div class="card p-2 text-center h-100 d-flex justify-content-center">
+                    <h6 class="small text-muted mb-2">Confusion Matrix</h6>
+                    <img id="cmImg" src="" style="max-height: 150px; object-fit: contain;">
+                </div>
+            </div>
+        </div>
+
+        <div class="card p-3">
+            <h6 class="text-muted small">SLICE CLUSTERING VISUALIZATION</h6>
+            <div style="height: 250px;"><canvas id="scatterChart"></canvas></div>
+        </div>
+    </div>
+</div>
+
+<script>
+    let liveChart, scatterChart, simInterval;
+    let isRunning = false;
+
+    window.onload = function() {
+        liveChart = new Chart(document.getElementById('liveChart'), {
+            type: 'line',
+            data: { labels: [], datasets: [{ data: [], borderColor: '#3498db', borderWidth: 2, pointRadius: 0 }] },
+            options: { maintainAspectRatio: false, scales: { x: {display:false}, y: {grid:{color:'#333'}} }, plugins:{legend:{display:false}} }
+        });
+
+        scatterChart = new Chart(document.getElementById('scatterChart'), {
+            type: 'scatter',
+            data: { datasets: [] },
+            options: { maintainAspectRatio: false, scales: { x: {grid:{color:'#333'}}, y: {grid:{color:'#333'}} } }
+        });
+    };
+
+    async function upload() {
+        let fd = new FormData();
+        let files = document.getElementById('fileInput').files;
+        if(files.length === 0) return alert("Select File");
+        for(let f of files) fd.append('files', f);
+        
+        let res = await fetch('/upload', {method:'POST', body:fd});
+        let data = await res.json();
+        if(data.status === 'success') {
+            document.getElementById('simBtn').disabled = false;
+            document.getElementById('statusBadge').innerText = "Data Loaded - Ready";
+            document.getElementById('statusBadge').className = "badge bg-primary p-2";
+        } else {
+            alert(data.message);
+        }
+    }
+
+    function toggleSim() {
+        let btn = document.getElementById('simBtn');
+        if(!isRunning) {
+            // START
+            isRunning = true;
+            btn.innerText = "⏹ Stop & Train";
+            btn.className = "btn btn-danger w-100 fw-bold";
+            document.getElementById('results').style.display = 'none';
+            document.getElementById('resBtn').disabled = true;
+            document.getElementById('statusBadge').innerText = "Simulating Traffic...";
+            document.getElementById('statusBadge').className = "badge bg-warning text-dark p-2";
+
+            simInterval = setInterval(async () => {
+                let res = await fetch('/stream_data');
+                let data = await res.json();
+                if(data.done) { toggleSim(); return; }
+
+                if(data.rate.length > 0) {
+                    let d = liveChart.data.datasets[0].data;
+                    let l = liveChart.data.labels;
+                    if(l.length > 50) { l.shift(); d.shift(); }
+                    data.rate.forEach(r => { l.push(''); d.push(r); });
+                    liveChart.update('none');
+                }
+            }, 80);
+        } else {
+            // STOP
+            isRunning = false;
+            clearInterval(simInterval);
+            btn.innerText = "▶ Restart Sim";
+            btn.className = "btn btn-success w-100 fw-bold";
+            document.getElementById('resBtn').disabled = false;
+            document.getElementById('statusBadge').innerText = "Simulation Paused";
+            document.getElementById('statusBadge').className = "badge bg-info text-dark p-2";
+            
+            // Auto-trigger results for convenience
+            generate();
+        }
+    }
+
+    async function generate() {
+        document.getElementById('loader').style.display = 'flex';
+        
+        try {
+            let fd = new FormData(); fd.append('clusters', 3);
+            let res = await fetch('/train_model', {method:'POST', body:fd});
+            let data = await res.json();
+            
+            document.getElementById('loader').style.display = 'none';
+            if(data.status === 'error') return alert(data.message);
+
+            document.getElementById('results').style.display = 'block';
+
+            // Fill Metrics
+            document.getElementById('valThru').innerText = data.throughput;
+            document.getElementById('valLat').innerText = data.latency;
+            document.getElementById('valLoss').innerText = data.loss;
+            document.getElementById('valAcc').innerText = data.accuracy;
+            document.getElementById('valF1').innerText = data.f1_score;
+            document.getElementById('cmImg').src = "data:image/png;base64," + data.cm_image;
+
+            // Fill Scatter
+            let clusters = {};
+            data.scatter.forEach(p => {
+                if(!clusters[p.c]) clusters[p.c] = [];
+                clusters[p.c].push({x: p.x, y: p.y});
+            });
+            const colors = ['#3498db', '#e74c3c', '#f1c40f'];
+            scatterChart.data.datasets = Object.keys(clusters).map((k, i) => ({
+                label: `Slice ${k}`, data: clusters[k], backgroundColor: colors[i%3]
+            }));
+            scatterChart.update();
+            
+            document.getElementById('statusBadge').innerText = "Analysis Complete";
+            document.getElementById('statusBadge').className = "badge bg-success p-2";
+
+        } catch(e) {
+            document.getElementById('loader').style.display = 'none';
+            alert("Error: " + e);
+        }
+    }
+</script>
+</body>
+</html>
