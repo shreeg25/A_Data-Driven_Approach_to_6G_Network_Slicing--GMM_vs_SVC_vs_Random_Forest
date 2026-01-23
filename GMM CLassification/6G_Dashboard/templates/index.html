@@ -2,59 +2,58 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <title>6G Full Metrics Dashboard</title>
+    <title>6G Intelligent Controller</title>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <style>
-        /* Dark Theme */
-        body { background-color: #121212; color: #ecf0f1; padding-bottom: 80px; font-family: sans-serif; }
-        .card { background-color: #1e1e1e; border: 1px solid #333; margin-bottom: 20px; box-shadow: 0 4px 6px rgba(0,0,0,0.3); }
+        body { background-color: #121212; color: #f0f0f0; padding-bottom: 100px; font-family: 'Segoe UI', sans-serif; }
+        .card { background-color: #1e1e1e; border: 1px solid #333; box-shadow: 0 4px 8px rgba(0,0,0,0.4); }
         h3, h5, h6 { color: #fff; }
-        
+
         /* Metric Cards */
         .metric-card {
-            border-left: 5px solid;
-            padding: 15px;
-            text-align: center;
-            background: #252525;
-            height: 100%;
+            border-left: 4px solid;
+            background: #252525; padding: 15px; text-align: center; height: 100%;
             display: flex; flex-direction: column; justify-content: center;
         }
-        .metric-title { font-size: 0.85rem; text-transform: uppercase; color: #aaa; letter-spacing: 1px; }
-        .metric-value { font-size: 1.8rem; font-weight: bold; margin-top: 5px; }
-        
-        /* Color Coding */
-        .border-blue { border-color: #3498db; color: #3498db; }
-        .border-yellow { border-color: #f1c40f; color: #f1c40f; }
-        .border-red { border-color: #e74c3c; color: #e74c3c; }
-        .border-green { border-color: #2ecc71; color: #2ecc71; }
+        .metric-label { font-size: 0.8rem; text-transform: uppercase; color: #aaa; letter-spacing: 1px; }
+        .metric-val { font-size: 1.6rem; font-weight: bold; margin-top: 5px; }
 
-        /* Loading Overlay */
-        #loader {
+        /* Metric Colors */
+        .c-blue { border-color: #3498db; color: #3498db; }
+        .c-yellow { border-color: #f1c40f; color: #f1c40f; }
+        .c-red { border-color: #e74c3c; color: #e74c3c; }
+        .c-green { border-color: #2ecc71; color: #2ecc71; }
+
+        /* Progress Overlay */
+        #progressOverlay {
             display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%;
-            background: rgba(0,0,0,0.9); z-index: 9999;
+            background: rgba(0,0,0,0.95); z-index: 9999;
             flex-direction: column; align-items: center; justify-content: center;
         }
+        .progress { width: 60%; height: 25px; background-color: #333; }
     </style>
 </head>
 <body>
 
-<div id="loader">
-    <div class="spinner-border text-primary" style="width: 4rem; height: 4rem;"></div>
-    <h3 class="mt-4 text-primary">Processing Metrics...</h3>
-    <p class="text-white-50">Calculating Latency, Loss, & Accuracy</p>
+<div id="progressOverlay">
+    <h3 class="mb-3 text-light">AI Training in Progress</h3>
+    <div class="progress mb-2">
+        <div id="progressBar" class="progress-bar progress-bar-striped progress-bar-animated bg-success" role="progressbar" style="width: 0%"></div>
+    </div>
+    <p id="progressText" class="text-info">Initializing...</p>
 </div>
 
 <div class="container mt-4">
     <div class="d-flex justify-content-between align-items-center mb-4">
         <div>
             <h3>📡 6G Network Intelligent Controller</h3>
-            <small class="text-muted">Real-Time QoS Monitoring & Slice Classification</small>
+            <small class="text-muted">QoS Monitoring & Slice Classification</small>
         </div>
         <span class="badge bg-secondary p-2" id="statusBadge">System Idle</span>
     </div>
 
-    <div class="card p-4">
+    <div class="card p-4 mb-4">
         <div class="row g-3">
             <div class="col-md-5">
                 <input type="file" class="form-control bg-dark text-light border-secondary" id="fileInput" multiple>
@@ -66,13 +65,13 @@
                 <button class="btn btn-success w-100 fw-bold" id="simBtn" onclick="toggleSim()" disabled>▶ Start Simulation</button>
             </div>
             <div class="col-md-2">
-                <button class="btn btn-primary w-100 fw-bold" id="resBtn" onclick="generate()" disabled>📊 Show Results</button>
+                <button class="btn btn-primary w-100 fw-bold" id="resBtn" onclick="startTraining()" disabled>📊 Analyze Results</button>
             </div>
         </div>
     </div>
 
-    <div class="card p-3">
-        <h6 class="text-muted small">LIVE PACKET RATE STREAM</h6>
+    <div class="card p-3 mb-4">
+        <h6 class="text-muted small">REAL-TIME TRAFFIC (PACKETS/SEC)</h6>
         <div style="height: 120px;"><canvas id="liveChart"></canvas></div>
     </div>
 
@@ -81,21 +80,21 @@
         <h5 class="border-bottom border-secondary pb-2 mb-3">Network QoS Metrics</h5>
         <div class="row g-3 mb-4">
             <div class="col-md-4">
-                <div class="metric-card border-blue">
-                    <div class="metric-title">Throughput</div>
-                    <div class="metric-value" id="valThru">--</div>
+                <div class="metric-card c-blue">
+                    <div class="metric-label">Throughput</div>
+                    <div class="metric-val" id="valThru">--</div>
                 </div>
             </div>
             <div class="col-md-4">
-                <div class="metric-card border-yellow">
-                    <div class="metric-title">Avg Latency</div>
-                    <div class="metric-value" id="valLat">--</div>
+                <div class="metric-card c-yellow">
+                    <div class="metric-label">Latency</div>
+                    <div class="metric-val" id="valLat">--</div>
                 </div>
             </div>
             <div class="col-md-4">
-                <div class="metric-card border-red">
-                    <div class="metric-title">Packet Loss</div>
-                    <div class="metric-value" id="valLoss">--</div>
+                <div class="metric-card c-red">
+                    <div class="metric-label">Packet Loss</div>
+                    <div class="metric-val" id="valLoss">--</div>
                 </div>
             </div>
         </div>
@@ -103,15 +102,15 @@
         <h5 class="border-bottom border-secondary pb-2 mb-3">AI Model Performance</h5>
         <div class="row g-3 mb-4">
             <div class="col-md-3">
-                <div class="metric-card border-green">
-                    <div class="metric-title">Accuracy</div>
-                    <div class="metric-value" id="valAcc">--</div>
+                <div class="metric-card c-green">
+                    <div class="metric-label">Accuracy</div>
+                    <div class="metric-val" id="valAcc">--</div>
                 </div>
             </div>
             <div class="col-md-3">
-                <div class="metric-card border-green">
-                    <div class="metric-title">F1-Score</div>
-                    <div class="metric-value" id="valF1">--</div>
+                <div class="metric-card c-green">
+                    <div class="metric-label">F1 Score</div>
+                    <div class="metric-val" id="valF1">--</div>
                 </div>
             </div>
             <div class="col-md-6">
@@ -123,14 +122,14 @@
         </div>
 
         <div class="card p-3">
-            <h6 class="text-muted small">SLICE CLUSTERING VISUALIZATION</h6>
+            <h6 class="text-muted small">TRAFFIC CLUSTERING (SLICE SEPARATION)</h6>
             <div style="height: 250px;"><canvas id="scatterChart"></canvas></div>
         </div>
     </div>
 </div>
 
 <script>
-    let liveChart, scatterChart, simInterval;
+    let liveChart, scatterChart, simInterval, pollInterval;
     let isRunning = false;
 
     window.onload = function() {
@@ -157,11 +156,9 @@
         let data = await res.json();
         if(data.status === 'success') {
             document.getElementById('simBtn').disabled = false;
-            document.getElementById('statusBadge').innerText = "Data Loaded - Ready";
+            document.getElementById('statusBadge').innerText = "Data Ready";
             document.getElementById('statusBadge').className = "badge bg-primary p-2";
-        } else {
-            alert(data.message);
-        }
+        } else { alert(data.message); }
     }
 
     function toggleSim() {
@@ -180,7 +177,6 @@
                 let res = await fetch('/stream_data');
                 let data = await res.json();
                 if(data.done) { toggleSim(); return; }
-
                 if(data.rate.length > 0) {
                     let d = liveChart.data.datasets[0].data;
                     let l = liveChart.data.labels;
@@ -199,20 +195,33 @@
             document.getElementById('statusBadge').innerText = "Simulation Paused";
             document.getElementById('statusBadge').className = "badge bg-info text-dark p-2";
             
-            // Auto-trigger results for convenience
-            generate();
+            // Auto-trigger training
+            startTraining();
         }
     }
 
-    async function generate() {
-        document.getElementById('loader').style.display = 'flex';
+    async function startTraining() {
+        // 1. Show Progress Overlay
+        document.getElementById('progressOverlay').style.display = 'flex';
+        document.getElementById('progressBar').style.width = '0%';
         
+        // 2. Start Polling for Progress
+        pollInterval = setInterval(async () => {
+            let res = await fetch('/status');
+            let data = await res.json();
+            document.getElementById('progressBar').style.width = data.progress + '%';
+            document.getElementById('progressText').innerText = data.status;
+        }, 200);
+
+        // 3. Trigger Training
         try {
             let fd = new FormData(); fd.append('clusters', 3);
             let res = await fetch('/train_model', {method:'POST', body:fd});
             let data = await res.json();
             
-            document.getElementById('loader').style.display = 'none';
+            clearInterval(pollInterval);
+            document.getElementById('progressOverlay').style.display = 'none';
+
             if(data.status === 'error') return alert(data.message);
 
             document.getElementById('results').style.display = 'block';
@@ -241,7 +250,8 @@
             document.getElementById('statusBadge').className = "badge bg-success p-2";
 
         } catch(e) {
-            document.getElementById('loader').style.display = 'none';
+            clearInterval(pollInterval);
+            document.getElementById('progressOverlay').style.display = 'none';
             alert("Error: " + e);
         }
     }
