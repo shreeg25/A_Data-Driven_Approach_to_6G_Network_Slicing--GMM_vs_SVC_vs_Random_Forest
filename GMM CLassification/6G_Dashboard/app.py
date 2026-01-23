@@ -22,53 +22,58 @@ app.config['RESULTS_FOLDER'] = 'results'
 os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
 os.makedirs(app.config['RESULTS_FOLDER'], exist_ok=True)
 
-# --- GLOBAL STATE (Thread-Safe) ---
+# --- GLOBAL STATE ---
 CURRENT_DATA = None
 SIMULATION_INDEX = 0
 
-# Training State Dictionary
 TRAINING_STATE = {
     "busy": False,
     "progress": 0,
     "status": "Idle",
-    "eta": 0,
+    "eta": "0.0", # Sent as string to ensure precision
     "result": None,
     "error": None
 }
 
-def calculate_eta(rows):
-    """Estimates processing time based on dataset size."""
-    # Rough benchmark: 100,000 rows takes ~3 seconds on average CPU
-    return round((rows / 100000) * 3.5 + 2, 1)
-
 def run_training_task(df, save_root):
-    """Background Worker Thread for AI Training"""
+    """Background Worker that updates ETA in real-time"""
     global TRAINING_STATE
     
     try:
-        start_t = time.time()
-        rows = len(df)
-        TRAINING_STATE['progress'] = 5
-        TRAINING_STATE['status'] = f"Initializing (Dataset: {rows} flows)..."
+        # ESTIMATE TOTAL TIME (3s + 0.5s per 10k rows)
+        total_estimated_time = 3.0 + (len(df) / 10000) * 0.5
+        start_time = time.time()
         
-        # Create Run Folder
+        # Helper to update ETA based on elapsed time
+        def update_eta():
+            elapsed = time.time() - start_time
+            remaining = max(0.0, total_estimated_time - elapsed)
+            TRAINING_STATE['eta'] = f"{remaining:.1f}"
+
+        # --- STEP 1: INITIALIZATION ---
+        TRAINING_STATE['progress'] = 5
+        TRAINING_STATE['status'] = f"Initializing ({len(df)} flows)..."
+        update_eta()
+        
         run_id = time.strftime("%Y%m%d-%H%M%S")
         save_dir = os.path.join(save_root, run_id)
         os.makedirs(save_dir, exist_ok=True)
-        
-        # --- PHASE 1: QOS CALCULATION (10-30%) ---
-        TRAINING_STATE['progress'] = 10
+        time.sleep(0.5) 
+
+        # --- STEP 2: METRICS ---
+        TRAINING_STATE['progress'] = 20
         TRAINING_STATE['status'] = "Calculating QoS Metrics..."
+        update_eta()
         
-        # Recalculate averages just to be sure
         avg_thru = df['Throughput'].mean()
         avg_lat = df['Latency'].mean()
         avg_loss = df['Loss'].mean()
-        time.sleep(0.5) # UI smoothing
-        
-        # --- PHASE 2: AI TRAINING (30-70%) ---
-        TRAINING_STATE['progress'] = 30
-        TRAINING_STATE['status'] = "Training GMM Neural Network..."
+        time.sleep(0.5)
+
+        # --- STEP 3: TRAINING ---
+        TRAINING_STATE['progress'] = 40
+        TRAINING_STATE['status'] = "Training Neural Network..."
+        update_eta()
         
         scaler = StandardScaler()
         X = df[['Size', 'Rate']].values
@@ -77,11 +82,13 @@ def run_training_task(df, save_root):
         gmm = GaussianMixture(n_components=3, random_state=42)
         gmm.fit(X_scaled)
         df['Cluster'] = gmm.predict(X_scaled)
-        
-        TRAINING_STATE['progress'] = 60
+        time.sleep(1.0) # Simulating heavy compute for small files
+
+        # --- STEP 4: MAPPING ---
+        TRAINING_STATE['progress'] = 70
         TRAINING_STATE['status'] = "Classifying Slices..."
+        update_eta()
         
-        # Map Clusters to Labels (Self-Supervised Logic)
         cluster_map = {}
         for c in range(3):
             subset = df[df['Cluster'] == c]
@@ -93,76 +100,48 @@ def run_training_task(df, save_root):
         preds = df['Cluster'].map(cluster_map)
         df['Predicted'] = preds
         
-        # --- PHASE 3: EVALUATION (70-90%) ---
-        TRAINING_STATE['progress'] = 75
-        TRAINING_STATE['status'] = "Calculating Accuracy Scores..."
+        # --- STEP 5: EVALUATION & SAVING ---
+        TRAINING_STATE['progress'] = 90
+        TRAINING_STATE['status'] = "Generating Report..."
+        update_eta()
         
         acc = accuracy_score(df['Label'], preds)
         p, r, f1, _ = precision_recall_fscore_support(df['Label'], preds, average='weighted', zero_division=0)
         
-        # Generate Confusion Matrix
+        # Save Confusion Matrix
         fig = plt.figure(figsize=(6, 5))
         cm = confusion_matrix(df['Label'], preds)
         labels = sorted(df['Label'].unique())
         sns.heatmap(cm, annot=True, fmt='d', cmap='Blues', xticklabels=labels, yticklabels=labels)
         plt.title('Confusion Matrix')
         plt.tight_layout()
+        plt.savefig(os.path.join(save_dir, "confusion_matrix.png"))
         
-        # Save Plot
-        img_path = os.path.join(save_dir, "confusion_matrix.png")
-        plt.savefig(img_path)
-        
-        # Encode for Web
         buf = io.BytesIO()
         plt.savefig(buf, format='png', dpi=100)
         plt.close(fig)
-        buf.seek(0)
         cm_image = base64.b64encode(buf.getvalue()).decode()
         
-        # --- PHASE 4: SAVING (90-100%) ---
-        TRAINING_STATE['progress'] = 90
-        TRAINING_STATE['status'] = "Archiving Results..."
-        
-        # Save CSV
+        # Save Data
         df.to_csv(os.path.join(save_dir, "processed_data.csv"), index=False)
         
-        # Save Report
-        with open(os.path.join(save_dir, "analysis_report.txt"), "w") as f:
-            f.write(f"6G AI CONTROLLER - ANALYSIS REPORT\n")
-            f.write(f"==================================\n")
-            f.write(f"Run ID: {run_id}\n")
-            f.write(f"Dataset Size: {rows} flows\n\n")
-            f.write(f"[NETWORK PERFORMANCE]\n")
-            f.write(f"Avg Throughput: {avg_thru:.2f} Mbps\n")
-            f.write(f"Avg Latency:    {avg_lat:.2f} ms\n")
-            f.write(f"Avg Loss:       {avg_loss:.2f} %\n\n")
-            f.write(f"[AI MODEL PERFORMANCE]\n")
-            f.write(f"Accuracy: {acc*100:.2f}%\n")
-            f.write(f"F1-Score: {f1*100:.2f}%\n")
-        
-        # Generate Scatter Sample
-        sample = df.sample(min(800, len(df)))
-        scatter = [{'x': float(r['Size']), 'y': float(r['Rate']), 'c': int(r['Cluster'])} for i,r in sample.iterrows()]
-        
-        duration = time.time() - start_t
-        
-        # --- FINALIZE ---
         TRAINING_STATE['result'] = {
             "throughput": f"{avg_thru:.2f} Mbps",
             "latency": f"{avg_lat:.2f} ms",
             "loss": f"{avg_loss:.2f}%",
             "accuracy": f"{acc*100:.1f}%",
             "f1_score": f"{f1*100:.1f}%",
-            "train_time": f"{duration:.2f}s",
             "cm_image": cm_image,
-            "scatter": scatter,
+            "scatter": [{'x': float(r['Size']), 'y': float(r['Rate']), 'c': int(r['Cluster'])} for i,r in df.sample(min(800, len(df))).iterrows()],
             "folder": save_dir
         }
+        
         TRAINING_STATE['progress'] = 100
         TRAINING_STATE['status'] = "Complete"
-        
+        TRAINING_STATE['eta'] = "0.0"
+
     except Exception as e:
-        print(f"TRAINING ERROR: {e}")
+        print(f"ERROR: {e}")
         TRAINING_STATE['error'] = str(e)
         TRAINING_STATE['status'] = "Error"
     
@@ -175,7 +154,7 @@ def index():
 
 @app.route('/upload', methods=['POST'])
 def upload_file():
-    global CURRENT_DATA, SIMULATION_INDEX
+    global CURRENT_DATA
     files = request.files.getlist('files')
     all_chunks = []
     
@@ -184,40 +163,35 @@ def upload_file():
         try:
             filepath = os.path.join(app.config['UPLOAD_FOLDER'], file.filename)
             file.save(filepath)
-            
             df = pd.read_csv(filepath)
             df.columns = df.columns.str.strip()
             
-            # AUTO-CORRECT & GENERATE COLUMNS
+            # AUTO-CORRECT COLUMNS for 'Book1.csv'
             if 'sMeanPktSz' in df.columns and 'SrcRate' in df.columns:
                 df['Size'] = df['sMeanPktSz']
                 df['Rate'] = df['SrcRate']
                 
-                # Logic: Throughput = Rate * Size * 8 / 1e6
+                # GENERATE MISSING METRICS
                 df['Throughput'] = (df['Rate'] * df['Size'] * 8) / 1e6
-                # Logic: Latency increases with Rate
                 df['Latency'] = 10 + (df['Rate'] / 50) + np.random.uniform(0, 5, len(df))
-                # Logic: Loss increases with Rate saturation
                 df['Loss'] = (df['Rate'] / (df['Rate'].max()+1)) * 5 * np.random.rand(len(df))
 
-                # Logic: Labels based on 3GPP characteristics
                 conditions = [
-                    (df['Size'] > 800) & (df['Rate'] > 100), # eMBB
-                    (df['Size'] < 200) & (df['Rate'] > 50),  # uRLLC
-                    (df['Rate'] <= 50)                       # mMTC
+                    (df['Size'] > 800) & (df['Rate'] > 100), 
+                    (df['Size'] < 200) & (df['Rate'] > 50),
+                    (df['Rate'] <= 50)
                 ]
                 df['Label'] = np.select(conditions, ['eMBB', 'uRLLC', 'mMTC'], default='mMTC')
-                
                 all_chunks.append(df)
+                
         except Exception as e:
-            print(f"Error: {e}")
+            print(e)
 
     if all_chunks:
         CURRENT_DATA = pd.concat(all_chunks, ignore_index=True).fillna(0)
-        SIMULATION_INDEX = 0
         return jsonify({"status": "success", "message": f"Loaded {len(CURRENT_DATA)} flows."})
     else:
-        return jsonify({"status": "error", "message": "Invalid CSV. Need 'sMeanPktSz' & 'SrcRate'."})
+        return jsonify({"status": "error", "message": "Invalid CSV columns."})
 
 @app.route('/stream_data')
 def stream_data():
@@ -230,36 +204,24 @@ def stream_data():
     
     return jsonify({
         "done": SIMULATION_INDEX >= len(CURRENT_DATA),
-        "rate": batch['Rate'].tolist(),
-        "processed": SIMULATION_INDEX
+        "rate": batch['Rate'].tolist()
     })
 
 @app.route('/start_training', methods=['POST'])
 def start_training():
     global TRAINING_STATE, CURRENT_DATA
+    if CURRENT_DATA is None: return jsonify({"status": "error", "message": "No data"})
+    if TRAINING_STATE['busy']: return jsonify({"status": "error", "message": "Busy"})
     
-    if CURRENT_DATA is None:
-        return jsonify({"status": "error", "message": "No data loaded"})
-        
-    if TRAINING_STATE['busy']:
-        return jsonify({"status": "error", "message": "Training already in progress"})
-    
-    # Reset State
     TRAINING_STATE = {
-        "busy": True,
-        "progress": 0,
-        "status": "Starting...",
-        "eta": calculate_eta(len(CURRENT_DATA)),
-        "result": None,
-        "error": None
+        "busy": True, "progress": 0, "status": "Starting...", 
+        "eta": "Calculating...", "result": None, "error": None
     }
     
-    # Start Background Thread
     thread = threading.Thread(target=run_training_task, args=(CURRENT_DATA.copy(), app.config['RESULTS_FOLDER']))
-    thread.daemon = True # Thread dies if server dies
+    thread.daemon = True
     thread.start()
-    
-    return jsonify({"status": "success", "message": "Background task started"})
+    return jsonify({"status": "success"})
 
 @app.route('/get_status')
 def get_status_route():
