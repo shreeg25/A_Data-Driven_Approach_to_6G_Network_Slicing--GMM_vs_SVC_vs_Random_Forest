@@ -28,56 +28,54 @@ def run_training_task(df, save_root):
     global TRAINING_STATE
     try:
         rows = len(df)
-        est_time = max(5.0, 3.0 + (rows / 12000))
+        est_time = max(5.0, 3.0 + (rows / 15000))
         start_t = time.time()
         
         def update(p, s):
             rem = max(0.0, est_time - (time.time() - start_t))
             TRAINING_STATE.update({"progress": p, "status": s, "eta": f"{rem:.1f}"})
 
-        # --- STEP 1: INTELLIGENT FEATURE SELECTION ---
-        update(10, "Scanning for Deep Packet Features...")
+        # --- STEP 1: FEATURE ENGINEERING ---
+        update(10, "Processing Network Features...")
         
-        # We prefer REAL columns, but fallback to calculated ones
         feature_set = ['Rate', 'Size']
         
-        # 1. BURSTINESS / JITTER
+        # 1. Burstiness (Real or Calc)
         if 'Jitter' in df.columns:
-            print(">>> Using REAL Jitter for Burstiness")
             df['Burstiness'] = df['Jitter']
             feature_set.append('Burstiness')
         else:
-            print(">>> Calculating Burstiness from Rate Variance")
+            # Calculate Burstiness from Rate Variance
             df['Burstiness'] = df['Rate'].rolling(10).std().fillna(0) / (df['Rate'].rolling(10).mean().fillna(1) + 1e-9)
             feature_set.append('Burstiness')
 
-        # 2. LATENCY
+        # 2. Latency (Real or Calc)
         if 'Duration' in df.columns:
-             # Normalize Duration to ms approximation
             df['Latency'] = df['Duration'] * 1000 
         else:
-            # M/M/1 Queue Approx
-            df['Latency'] = (1 / (1000 - df['Rate'].clip(upper=990))) * 1000 + (df['Size']*0.01)
+            # Physics-based Latency: Serialization + Queueing
+            # Queueing spikes as Rate -> 1000Mbps
+            df['Latency'] = (1 / (1000 - df['Rate'].clip(upper=990))) * 1000 + (df['Size'] * 0.01)
 
-        # 3. LOSS
+        # 3. Loss (Real or Calc)
         if 'Loss' in df.columns:
-            # Scale if necessary (sometimes pLoss is 0-1, sometimes packets)
             if df['Loss'].max() < 1.0: df['Loss'] = df['Loss'] * 100 
         else:
+            # Loss probability increases with Burstiness
             util = df['Rate'] / 1000
             df['Loss'] = (util**4) * (1 + df['Burstiness']) * 100
+            df['Loss'] = df['Loss'].clip(0, 100)
 
-        # --- STEP 2: REALISTIC LABELING ---
-        # We classify based on the BEST available data
-        update(30, "Generating Ground Truth Labels...")
+        # --- STEP 2: LABELING ---
+        update(30, "Classifying Traffic Types...")
         
+        # Ground Truth Logic
         conditions = [
-            (df['Rate'] > 100) & (df['Burstiness'] > df['Burstiness'].mean()), # eMBB (High Speed, Bursty)
-            (df['Latency'] < 10) & (df['Loss'] < 0.1),                         # uRLLC (Ultra Reliable)
-            (df['Rate'] < 50)                                                  # mMTC (Low Speed)
+            (df['Rate'] > 100) & (df['Burstiness'] > df['Burstiness'].mean()), # eMBB
+            (df['Latency'] < 10) & (df['Loss'] < 0.1),                         # uRLLC
+            (df['Rate'] < 50)                                                  # mMTC
         ]
         df['Label'] = np.select(conditions, ['eMBB', 'uRLLC', 'mMTC'], default='mMTC')
-        
         time.sleep(1.0)
 
         # --- STEP 3: TRAINING ---
@@ -92,7 +90,7 @@ def run_training_task(df, save_root):
         df['Cluster'] = gmm.predict(X_scaled)
         iterations = gmm.n_iter_
         
-        update(70, "Mapping Slices...")
+        update(70, "Mapping Clusters...")
         cluster_map = {}
         for c in range(3):
             sub = df[df['Cluster'] == c]
@@ -105,7 +103,7 @@ def run_training_task(df, save_root):
         acc = accuracy_score(df['Label'], preds)
         _, _, f1, _ = precision_recall_fscore_support(df['Label'], preds, average='weighted', zero_division=0)
         
-        # Confusion Matrix
+        # Plot
         fig = plt.figure(figsize=(5, 4))
         sns.heatmap(confusion_matrix(df['Label'], preds), annot=True, fmt='d', cmap='viridis')
         plt.tight_layout()
@@ -128,7 +126,6 @@ def run_training_task(df, save_root):
             "f1_score": f"{f1*100:.1f}%",
             "iterations": iterations,
             "cm_image": cm_b64,
-            # Plot Burstiness vs Rate
             "scatter": [{'x': float(r['Burstiness']), 'y': float(r['Rate']), 'c': int(r['Cluster'])} for i,r in df.sample(min(800, len(df))).iterrows()],
             "folder": save_dir
         }
@@ -136,7 +133,7 @@ def run_training_task(df, save_root):
         TRAINING_STATE['eta'] = "0.0"
 
     except Exception as e:
-        print(e)
+        print(f"Error: {e}")
         TRAINING_STATE.update({"status": "Error", "error": str(e)})
     finally:
         TRAINING_STATE['busy'] = False
@@ -149,34 +146,63 @@ def upload_file():
     global CURRENT_DATA
     files = request.files.getlist('files')
     chunks = []
+    
+    print(">>> SERVER: Processing Upload...")
+    
     for f in files:
         if f.filename=='': continue
         p = os.path.join(app.config['UPLOAD_FOLDER'], f.filename)
         f.save(p)
         try:
-            df = pd.read_csv(p)
+            # 'utf-8-sig' handles Excel CSVs correctly
+            try:
+                df = pd.read_csv(p, encoding='utf-8-sig')
+            except:
+                df = pd.read_csv(p, encoding='latin1')
+                
             df.columns = df.columns.str.strip()
             
-            # --- INTELLIGENT COLUMN MAPPING ---
+            # --- ROBUST COLUMN MAPPING ---
             rename_map = {}
             for col in df.columns:
-                c = col.lower()
-                if 'rate' in c or 'bps' in c: rename_map[col] = 'Rate'
-                elif 'size' in c or 'len' in c or 'bytes' in c: rename_map[col] = 'Size'
-                elif 'jit' in c: rename_map[col] = 'Jitter'       # <--- Detect Jitter
-                elif 'loss' in c or 'drop' in c: rename_map[col] = 'Loss' # <--- Detect Loss
-                elif 'dur' in c: rename_map[col] = 'Duration'     # <--- Detect Duration
+                c = col.lower().strip()
+                
+                # 1. RATE
+                if any(x in c for x in ['rate', 'bps', 'spd']): 
+                    rename_map[col] = 'Rate'
+                
+                # 2. SIZE (Crucial Fix: Added 'sz' and 'pkt' and 'len')
+                elif any(x in c for x in ['size', 'sz', 'pkt', 'len', 'byte']): 
+                    rename_map[col] = 'Size'
+                
+                # 3. JITTER/BURSTINESS
+                elif 'jit' in c or 'var' in c: 
+                    rename_map[col] = 'Jitter'
+                
+                # 4. LOSS
+                elif 'loss' in c or 'drop' in c: 
+                    rename_map[col] = 'Loss'
+                
+                # 5. DURATION
+                elif 'dur' in c or 'time' in c: 
+                    rename_map[col] = 'Duration'
             
             df = df.rename(columns=rename_map)
             
+            # Check mandatory columns
             if 'Rate' in df.columns and 'Size' in df.columns:
                 chunks.append(df)
-        except: pass
+            else:
+                print(f">>> ERROR: {f.filename} columns not recognized. Found: {df.columns.tolist()}")
+                
+        except Exception as e:
+            print(f">>> CRITICAL ERROR: {e}")
         
     if chunks:
         CURRENT_DATA = pd.concat(chunks, ignore_index=True).fillna(0)
-        return jsonify({"status": "success", "msg": f"Loaded {len(CURRENT_DATA)} flows. Found Real Metrics: {'Jitter' in CURRENT_DATA.columns}"})
-    return jsonify({"status": "error", "msg": "No valid data."})
+        print(f">>> SUCCESS: Loaded {len(CURRENT_DATA)} rows.")
+        return jsonify({"status": "success", "msg": f"Loaded {len(CURRENT_DATA)} flows."})
+    return jsonify({"status": "error", "msg": "No valid data. Required: 'Rate' & 'Size/Sz/Pkt'"})
 
 @app.route('/stream_data')
 def stream():
