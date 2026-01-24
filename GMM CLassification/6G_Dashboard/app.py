@@ -15,208 +15,187 @@ from sklearn.preprocessing import StandardScaler
 from sklearn.metrics import accuracy_score, confusion_matrix, precision_recall_fscore_support
 
 app = Flask(__name__)
-app.config['TEMPLATES_AUTO_RELOAD'] = True
 app.config['UPLOAD_FOLDER'] = 'uploads'
 app.config['RESULTS_FOLDER'] = 'results'
-
 os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
 os.makedirs(app.config['RESULTS_FOLDER'], exist_ok=True)
 
-# --- GLOBAL STATE ---
 CURRENT_DATA = None
 SIMULATION_INDEX = 0
-
-TRAINING_STATE = {
-    "busy": False,
-    "progress": 0,
-    "status": "Idle",
-    "eta": "0.0",
-    "result": None,
-    "error": None
-}
+TRAINING_STATE = {"busy": False, "progress": 0, "status": "Idle", "eta": "0.0", "result": None}
 
 def run_training_task(df, save_root):
-    """Background Worker with FORCED DELAYS for Visualization"""
     global TRAINING_STATE
-    
     try:
-        # 1. SETUP & ETA CALCULATION
         rows = len(df)
-        # We enforce a minimum of 5 seconds for the UX
-        estimated_seconds = max(5.0, 3.0 + (rows / 20000))
-        start_time = time.time()
+        est_time = max(5.0, 3.0 + (rows / 12000))
+        start_t = time.time()
         
-        def update_state(prog, status):
-            elapsed = time.time() - start_time
-            remaining = max(0.0, estimated_seconds - elapsed)
-            TRAINING_STATE['progress'] = prog
-            TRAINING_STATE['status'] = status
-            TRAINING_STATE['eta'] = f"{remaining:.1f}"
-            print(f">>> Progress: {prog}% | Status: {status} | ETA: {remaining:.1f}s")
+        def update(p, s):
+            rem = max(0.0, est_time - (time.time() - start_t))
+            TRAINING_STATE.update({"progress": p, "status": s, "eta": f"{rem:.1f}"})
 
-        update_state(5, f"Initializing ({rows} flows)...")
-        time.sleep(1.0) # Visual pause
-
-        run_id = time.strftime("%Y%m%d-%H%M%S")
-        save_dir = os.path.join(save_root, run_id)
-        os.makedirs(save_dir, exist_ok=True)
-
-        # 2. QoS METRICS (10% - 30%)
-        update_state(10, "Calculating Throughput & Latency...")
-        avg_thru = df['Throughput'].mean()
-        avg_lat = df['Latency'].mean()
-        avg_loss = df['Loss'].mean()
-        time.sleep(1.0) # Visual pause
-
-        # 3. AI TRAINING (30% - 70%)
-        update_state(30, "Training Neural Network...")
+        # --- STEP 1: INTELLIGENT FEATURE SELECTION ---
+        update(10, "Scanning for Deep Packet Features...")
         
+        # We prefer REAL columns, but fallback to calculated ones
+        feature_set = ['Rate', 'Size']
+        
+        # 1. BURSTINESS / JITTER
+        if 'Jitter' in df.columns:
+            print(">>> Using REAL Jitter for Burstiness")
+            df['Burstiness'] = df['Jitter']
+            feature_set.append('Burstiness')
+        else:
+            print(">>> Calculating Burstiness from Rate Variance")
+            df['Burstiness'] = df['Rate'].rolling(10).std().fillna(0) / (df['Rate'].rolling(10).mean().fillna(1) + 1e-9)
+            feature_set.append('Burstiness')
+
+        # 2. LATENCY
+        if 'Duration' in df.columns:
+             # Normalize Duration to ms approximation
+            df['Latency'] = df['Duration'] * 1000 
+        else:
+            # M/M/1 Queue Approx
+            df['Latency'] = (1 / (1000 - df['Rate'].clip(upper=990))) * 1000 + (df['Size']*0.01)
+
+        # 3. LOSS
+        if 'Loss' in df.columns:
+            # Scale if necessary (sometimes pLoss is 0-1, sometimes packets)
+            if df['Loss'].max() < 1.0: df['Loss'] = df['Loss'] * 100 
+        else:
+            util = df['Rate'] / 1000
+            df['Loss'] = (util**4) * (1 + df['Burstiness']) * 100
+
+        # --- STEP 2: REALISTIC LABELING ---
+        # We classify based on the BEST available data
+        update(30, "Generating Ground Truth Labels...")
+        
+        conditions = [
+            (df['Rate'] > 100) & (df['Burstiness'] > df['Burstiness'].mean()), # eMBB (High Speed, Bursty)
+            (df['Latency'] < 10) & (df['Loss'] < 0.1),                         # uRLLC (Ultra Reliable)
+            (df['Rate'] < 50)                                                  # mMTC (Low Speed)
+        ]
+        df['Label'] = np.select(conditions, ['eMBB', 'uRLLC', 'mMTC'], default='mMTC')
+        
+        time.sleep(1.0)
+
+        # --- STEP 3: TRAINING ---
+        update(50, f"Training GMM on {feature_set}...")
+        
+        X = df[feature_set].values
         scaler = StandardScaler()
-        X = df[['Size', 'Rate']].values
         X_scaled = scaler.fit_transform(X)
         
         gmm = GaussianMixture(n_components=3, random_state=42)
         gmm.fit(X_scaled)
         df['Cluster'] = gmm.predict(X_scaled)
+        iterations = gmm.n_iter_
         
-        update_state(60, "Classifying 6G Slices...")
-        time.sleep(1.0) # Visual pause
-
-        # Map Clusters
+        update(70, "Mapping Slices...")
         cluster_map = {}
         for c in range(3):
-            subset = df[df['Cluster'] == c]
-            if not subset.empty:
-                cluster_map[c] = subset['Label'].mode()[0]
-            else:
-                cluster_map[c] = "Unknown"
-        
+            sub = df[df['Cluster'] == c]
+            if not sub.empty: cluster_map[c] = sub['Label'].mode()[0]
+            else: cluster_map[c] = "Unknown"
         preds = df['Cluster'].map(cluster_map)
         
-        # 4. EVALUATION (70% - 90%)
-        update_state(80, "Generating Accuracy Report...")
+        # --- RESULTS ---
+        update(90, "Finalizing...")
         acc = accuracy_score(df['Label'], preds)
-        p, r, f1, _ = precision_recall_fscore_support(df['Label'], preds, average='weighted', zero_division=0)
+        _, _, f1, _ = precision_recall_fscore_support(df['Label'], preds, average='weighted', zero_division=0)
         
-        # Generate Confusion Matrix
-        fig = plt.figure(figsize=(6, 5))
-        cm = confusion_matrix(df['Label'], preds)
-        labels = sorted(df['Label'].unique())
-        sns.heatmap(cm, annot=True, fmt='d', cmap='Blues', xticklabels=labels, yticklabels=labels)
-        plt.title('Confusion Matrix')
+        # Confusion Matrix
+        fig = plt.figure(figsize=(5, 4))
+        sns.heatmap(confusion_matrix(df['Label'], preds), annot=True, fmt='d', cmap='viridis')
         plt.tight_layout()
-        
         buf = io.BytesIO()
         plt.savefig(buf, format='png', dpi=100)
         plt.close(fig)
-        cm_image = base64.b64encode(buf.getvalue()).decode()
+        cm_b64 = base64.b64encode(buf.getvalue()).decode()
         
-        # Save to Disk
-        df.to_csv(os.path.join(save_dir, "processed_data.csv"), index=False)
-        plt.savefig(os.path.join(save_dir, "confusion_matrix.png"))
-        
-        # 5. FINALIZE (100%)
-        update_state(100, "Finalizing...")
-        time.sleep(0.5)
+        # Save
+        run_id = time.strftime("%Y%m%d-%H%M%S")
+        save_dir = os.path.join(save_root, run_id)
+        os.makedirs(save_dir, exist_ok=True)
+        df.to_csv(os.path.join(save_dir, "results.csv"), index=False)
         
         TRAINING_STATE['result'] = {
-            "throughput": f"{avg_thru:.2f} Mbps",
-            "latency": f"{avg_lat:.2f} ms",
-            "loss": f"{avg_loss:.2f}%",
+            "throughput": f"{df['Rate'].mean():.2f} Mbps",
+            "latency": f"{df['Latency'].mean():.2f} ms",
+            "loss": f"{df['Loss'].mean():.3f}%",
             "accuracy": f"{acc*100:.1f}%",
             "f1_score": f"{f1*100:.1f}%",
-            "cm_image": cm_image,
-            "scatter": [{'x': float(r['Size']), 'y': float(r['Rate']), 'c': int(r['Cluster'])} for i,r in df.sample(min(800, len(df))).iterrows()],
+            "iterations": iterations,
+            "cm_image": cm_b64,
+            # Plot Burstiness vs Rate
+            "scatter": [{'x': float(r['Burstiness']), 'y': float(r['Rate']), 'c': int(r['Cluster'])} for i,r in df.sample(min(800, len(df))).iterrows()],
             "folder": save_dir
         }
         TRAINING_STATE['status'] = "Complete"
         TRAINING_STATE['eta'] = "0.0"
 
     except Exception as e:
-        print(f"ERROR: {e}")
-        TRAINING_STATE['error'] = str(e)
-        TRAINING_STATE['status'] = "Error"
-    
+        print(e)
+        TRAINING_STATE.update({"status": "Error", "error": str(e)})
     finally:
         TRAINING_STATE['busy'] = False
 
 @app.route('/')
-def index():
-    return render_template('index.html', timestamp=time.time())
+def index(): return render_template('index.html')
 
 @app.route('/upload', methods=['POST'])
 def upload_file():
     global CURRENT_DATA
     files = request.files.getlist('files')
-    all_chunks = []
-    
-    for file in files:
-        if file.filename == '': continue
+    chunks = []
+    for f in files:
+        if f.filename=='': continue
+        p = os.path.join(app.config['UPLOAD_FOLDER'], f.filename)
+        f.save(p)
         try:
-            filepath = os.path.join(app.config['UPLOAD_FOLDER'], file.filename)
-            file.save(filepath)
-            df = pd.read_csv(filepath)
+            df = pd.read_csv(p)
             df.columns = df.columns.str.strip()
             
-            # AUTO-CORRECT COLUMNS
-            if 'sMeanPktSz' in df.columns and 'SrcRate' in df.columns:
-                df['Size'] = df['sMeanPktSz']
-                df['Rate'] = df['SrcRate']
-                
-                # METRICS GENERATION
-                df['Throughput'] = (df['Rate'] * df['Size'] * 8) / 1e6
-                df['Latency'] = 10 + (df['Rate'] / 50) + np.random.uniform(0, 5, len(df))
-                df['Loss'] = (df['Rate'] / (df['Rate'].max()+1)) * 5 * np.random.rand(len(df))
-
-                conditions = [
-                    (df['Size'] > 800) & (df['Rate'] > 100), 
-                    (df['Size'] < 200) & (df['Rate'] > 50),
-                    (df['Rate'] <= 50)
-                ]
-                df['Label'] = np.select(conditions, ['eMBB', 'uRLLC', 'mMTC'], default='mMTC')
-                all_chunks.append(df)
-        except Exception as e:
-            print(e)
-
-    if all_chunks:
-        CURRENT_DATA = pd.concat(all_chunks, ignore_index=True).fillna(0)
-        return jsonify({"status": "success", "message": f"Loaded {len(CURRENT_DATA)} flows."})
-    else:
-        return jsonify({"status": "error", "message": "Invalid CSV columns."})
+            # --- INTELLIGENT COLUMN MAPPING ---
+            rename_map = {}
+            for col in df.columns:
+                c = col.lower()
+                if 'rate' in c or 'bps' in c: rename_map[col] = 'Rate'
+                elif 'size' in c or 'len' in c or 'bytes' in c: rename_map[col] = 'Size'
+                elif 'jit' in c: rename_map[col] = 'Jitter'       # <--- Detect Jitter
+                elif 'loss' in c or 'drop' in c: rename_map[col] = 'Loss' # <--- Detect Loss
+                elif 'dur' in c: rename_map[col] = 'Duration'     # <--- Detect Duration
+            
+            df = df.rename(columns=rename_map)
+            
+            if 'Rate' in df.columns and 'Size' in df.columns:
+                chunks.append(df)
+        except: pass
+        
+    if chunks:
+        CURRENT_DATA = pd.concat(chunks, ignore_index=True).fillna(0)
+        return jsonify({"status": "success", "msg": f"Loaded {len(CURRENT_DATA)} flows. Found Real Metrics: {'Jitter' in CURRENT_DATA.columns}"})
+    return jsonify({"status": "error", "msg": "No valid data."})
 
 @app.route('/stream_data')
-def stream_data():
-    global CURRENT_DATA, SIMULATION_INDEX
-    if CURRENT_DATA is None: return jsonify({"error": "No data"})
-    
-    end_idx = min(SIMULATION_INDEX + 500, len(CURRENT_DATA))
-    batch = CURRENT_DATA.iloc[SIMULATION_INDEX:end_idx]
-    SIMULATION_INDEX = end_idx
-    
-    return jsonify({
-        "done": SIMULATION_INDEX >= len(CURRENT_DATA),
-        "rate": batch['Rate'].tolist()
-    })
+def stream():
+    global SIMULATION_INDEX
+    if CURRENT_DATA is None: return jsonify({"done": True})
+    end = min(SIMULATION_INDEX+500, len(CURRENT_DATA))
+    batch = CURRENT_DATA.iloc[SIMULATION_INDEX:end]
+    SIMULATION_INDEX = end
+    return jsonify({"done": SIMULATION_INDEX>=len(CURRENT_DATA), "rate": batch['Rate'].tolist()})
 
 @app.route('/start_training', methods=['POST'])
-def start_training():
-    global TRAINING_STATE, CURRENT_DATA
-    if CURRENT_DATA is None: return jsonify({"status": "error", "message": "No data"})
-    if TRAINING_STATE['busy']: return jsonify({"status": "error", "message": "Busy"})
-    
-    TRAINING_STATE = {
-        "busy": True, "progress": 0, "status": "Starting...", 
-        "eta": "Calculating...", "result": None, "error": None
-    }
-    
-    thread = threading.Thread(target=run_training_task, args=(CURRENT_DATA.copy(), app.config['RESULTS_FOLDER']))
-    thread.daemon = True
-    thread.start()
-    return jsonify({"status": "success"})
+def start():
+    if not TRAINING_STATE['busy'] and CURRENT_DATA is not None:
+        TRAINING_STATE.update({"busy": True, "progress": 0, "status": "Starting..."})
+        threading.Thread(target=run_training_task, args=(CURRENT_DATA.copy(), app.config['RESULTS_FOLDER']), daemon=True).start()
+        return jsonify({"status": "success"})
+    return jsonify({"status": "error"})
 
 @app.route('/get_status')
-def get_status_route():
-    return jsonify(TRAINING_STATE)
+def status(): return jsonify(TRAINING_STATE)
 
-if __name__ == '__main__':
-    app.run(debug=True, port=5000)
+if __name__ == '__main__': app.run(debug=True, port=5000)
