@@ -6,7 +6,7 @@ import threading
 import numpy as np
 import pandas as pd
 import matplotlib
-matplotlib.use('Agg') 
+matplotlib.use('Agg') # backend for non-GUI server
 import matplotlib.pyplot as plt
 import seaborn as sns
 from flask import Flask, render_template, request, jsonify
@@ -54,7 +54,6 @@ def run_training_task(df, save_root):
             df['Latency'] = df['Duration'] * 1000 
         else:
             # Physics-based Latency: Serialization + Queueing
-            # Queueing spikes as Rate -> 1000Mbps
             df['Latency'] = (1 / (1000 - df['Rate'].clip(upper=990))) * 1000 + (df['Size'] * 0.01)
 
         # 3. Loss (Real or Calc)
@@ -98,30 +97,58 @@ def run_training_task(df, save_root):
             else: cluster_map[c] = "Unknown"
         preds = df['Cluster'].map(cluster_map)
         
-        # --- RESULTS ---
-        update(90, "Finalizing...")
+        # --- RESULTS & SAVING ---
+        update(90, "Finalizing & Saving...")
+        
+        # Calculate Metrics
         acc = accuracy_score(df['Label'], preds)
         _, _, f1, _ = precision_recall_fscore_support(df['Label'], preds, average='weighted', zero_division=0)
         
-        # Plot
-        fig = plt.figure(figsize=(5, 4))
-        sns.heatmap(confusion_matrix(df['Label'], preds), annot=True, fmt='d', cmap='viridis')
-        plt.tight_layout()
-        buf = io.BytesIO()
-        plt.savefig(buf, format='png', dpi=100)
-        plt.close(fig)
-        cm_b64 = base64.b64encode(buf.getvalue()).decode()
-        
-        # Save
+        avg_thru = df['Rate'].mean()
+        avg_lat = df['Latency'].mean()
+        avg_loss = df['Loss'].mean()
+
+        # Create Run Directory
         run_id = time.strftime("%Y%m%d-%H%M%S")
         save_dir = os.path.join(save_root, run_id)
         os.makedirs(save_dir, exist_ok=True)
-        df.to_csv(os.path.join(save_dir, "results.csv"), index=False)
+
+        # 1. FIXED CONFUSION MATRIX PLOT
+        fig, ax = plt.subplots(figsize=(6, 5))
+        cm_data = confusion_matrix(df['Label'], preds)
+        labels = sorted(df['Label'].unique())
+        
+        sns.heatmap(cm_data, annot=True, fmt='d', cmap='viridis', xticklabels=labels, yticklabels=labels, ax=ax)
+        ax.set_title('Confusion Matrix')
+        
+        # Save Image to Disk
+        fig.savefig(os.path.join(save_dir, "confusion_matrix.png"), bbox_inches='tight', facecolor='white')
+        
+        # Save to Buffer for Web
+        buf = io.BytesIO()
+        fig.savefig(buf, format='png', bbox_inches='tight', facecolor='white')
+        plt.close(fig) 
+        cm_b64 = base64.b64encode(buf.getvalue()).decode()
+        
+        # 2. SAVE SEPARATE SUMMARY METRICS CSV
+        summary_data = {
+            "Timestamp": [time.ctime()],
+            "Overall_Throughput_Mbps": [avg_thru],
+            "Overall_Latency_ms": [avg_lat],
+            "Overall_Loss_Percent": [avg_loss],
+            "Model_Accuracy": [acc],
+            "F1_Score": [f1],
+            "Iterations_to_Converge": [iterations],
+            "Total_Flows": [rows]
+        }
+        pd.DataFrame(summary_data).to_csv(os.path.join(save_dir, "summary_metrics.csv"), index=False)
+        
+        # NOTE: Removed the line that saved 'processed_data.csv' or 'classified_data.csv'
         
         TRAINING_STATE['result'] = {
-            "throughput": f"{df['Rate'].mean():.2f} Mbps",
-            "latency": f"{df['Latency'].mean():.2f} ms",
-            "loss": f"{df['Loss'].mean():.3f}%",
+            "throughput": f"{avg_thru:.2f} Mbps",
+            "latency": f"{avg_lat:.2f} ms",
+            "loss": f"{avg_loss:.3f}%",
             "accuracy": f"{acc*100:.1f}%",
             "f1_score": f"{f1*100:.1f}%",
             "iterations": iterations,
@@ -154,42 +181,21 @@ def upload_file():
         p = os.path.join(app.config['UPLOAD_FOLDER'], f.filename)
         f.save(p)
         try:
-            # 'utf-8-sig' handles Excel CSVs correctly
-            try:
-                df = pd.read_csv(p, encoding='utf-8-sig')
-            except:
-                df = pd.read_csv(p, encoding='latin1')
-                
+            try: df = pd.read_csv(p, encoding='utf-8-sig')
+            except: df = pd.read_csv(p, encoding='latin1')
             df.columns = df.columns.str.strip()
             
-            # --- ROBUST COLUMN MAPPING ---
             rename_map = {}
             for col in df.columns:
                 c = col.lower().strip()
-                
-                # 1. RATE
-                if any(x in c for x in ['rate', 'bps', 'spd']): 
-                    rename_map[col] = 'Rate'
-                
-                # 2. SIZE (Crucial Fix: Added 'sz' and 'pkt' and 'len')
-                elif any(x in c for x in ['size', 'sz', 'pkt', 'len', 'byte']): 
-                    rename_map[col] = 'Size'
-                
-                # 3. JITTER/BURSTINESS
-                elif 'jit' in c or 'var' in c: 
-                    rename_map[col] = 'Jitter'
-                
-                # 4. LOSS
-                elif 'loss' in c or 'drop' in c: 
-                    rename_map[col] = 'Loss'
-                
-                # 5. DURATION
-                elif 'dur' in c or 'time' in c: 
-                    rename_map[col] = 'Duration'
+                if any(x in c for x in ['rate', 'bps', 'spd']): rename_map[col] = 'Rate'
+                elif any(x in c for x in ['size', 'sz', 'pkt', 'len', 'byte']): rename_map[col] = 'Size'
+                elif 'jit' in c or 'var' in c: rename_map[col] = 'Jitter'
+                elif 'loss' in c or 'drop' in c: rename_map[col] = 'Loss'
+                elif 'dur' in c or 'time' in c: rename_map[col] = 'Duration'
             
             df = df.rename(columns=rename_map)
             
-            # Check mandatory columns
             if 'Rate' in df.columns and 'Size' in df.columns:
                 chunks.append(df)
             else:
@@ -200,9 +206,8 @@ def upload_file():
         
     if chunks:
         CURRENT_DATA = pd.concat(chunks, ignore_index=True).fillna(0)
-        print(f">>> SUCCESS: Loaded {len(CURRENT_DATA)} rows.")
         return jsonify({"status": "success", "msg": f"Loaded {len(CURRENT_DATA)} flows."})
-    return jsonify({"status": "error", "msg": "No valid data. Required: 'Rate' & 'Size/Sz/Pkt'"})
+    return jsonify({"status": "error", "msg": "No valid data. Required: 'Rate' & 'Size'"})
 
 @app.route('/stream_data')
 def stream():

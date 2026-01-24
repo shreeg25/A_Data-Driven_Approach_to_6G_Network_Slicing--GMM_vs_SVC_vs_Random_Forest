@@ -8,6 +8,8 @@
     <style>
         body { background: #0f0f0f; color: #ddd; font-family: system-ui; padding-bottom: 50px; }
         .card { background: #1a1a1a; border: 1px solid #333; }
+        
+        /* Metric Cards */
         .metric-card { background: #222; border-left: 4px solid; padding: 15px; text-align: center; }
         .val { font-size: 1.5rem; font-weight: bold; margin-top: 5px; }
         .c-blue { border-color: #3498db; color: #3498db; }
@@ -15,11 +17,12 @@
         .c-red { border-color: #e74c3c; color: #e74c3c; }
         .c-grn { border-color: #2ecc71; color: #2ecc71; }
         
+        /* Loading Overlay */
         #overlay { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.95); z-index: 999; flex-direction: column; justify-content: center; align-items: center; }
         #eta { font-size: 4rem; font-weight: 800; color: #ffc107; text-shadow: 0 0 20px #ffc107; }
         
-        /* GRAPH VISIBILITY TWEAKS */
-        .chart-box { height: 200px; width: 100%; } /* Restricts height to make it 'narrower' visually */
+        /* Chart Sizing */
+        .chart-box { height: 200px; width: 100%; } 
     </style>
 </head>
 <body>
@@ -47,10 +50,18 @@
 
     <div class="card p-4 mb-4">
         <div class="row g-2">
-            <div class="col-5"><input type="file" id="fIn" class="form-control bg-dark text-light border-secondary" multiple></div>
-            <div class="col-2"><button onclick="up()" class="btn btn-secondary w-100">Load Data</button></div>
-            <div class="col-3"><button onclick="sim()" id="btnSim" class="btn btn-success w-100" disabled>▶ Start Stream</button></div>
-            <div class="col-2"><button onclick="train()" id="btnRes" class="btn btn-primary w-100" disabled>📊 Analyze</button></div>
+            <div class="col-5">
+                <input type="file" id="fIn" class="form-control bg-dark text-light border-secondary" multiple>
+            </div>
+            <div class="col-2">
+                <button onclick="up()" class="btn btn-secondary w-100">Load Data</button>
+            </div>
+            <div class="col-3">
+                <button onclick="sim()" id="btnSim" class="btn btn-success w-100" disabled>▶ Start Stream</button>
+            </div>
+            <div class="col-2">
+                <button onclick="train()" id="btnRes" class="btn btn-primary w-100" disabled>📊 Analyze</button>
+            </div>
         </div>
     </div>
 
@@ -60,13 +71,14 @@
     </div>
 
     <div id="res" style="display:none;">
-        <div class="alert alert-success">💾 Saved to: <strong id="path"></strong></div>
+        <div class="alert alert-success">💾 Results Saved: <strong id="path"></strong></div>
 
         <div class="row g-3 mb-4">
             <div class="col-4"><div class="metric-card c-blue"><small>THROUGHPUT</small><div id="vThru" class="val">--</div></div></div>
             <div class="col-4"><div class="metric-card c-yel"><small>LATENCY</small><div id="vLat" class="val">--</div></div></div>
             <div class="col-4"><div class="metric-card c-red"><small>LOSS</small><div id="vLoss" class="val">--</div></div></div>
         </div>
+        
         <div class="row g-3 mb-4">
             <div class="col-3"><div class="metric-card c-grn"><small>ACCURACY</small><div id="vAcc" class="val">--</div></div></div>
             <div class="col-3"><div class="metric-card c-grn"><small>F1 SCORE</small><div id="vF1" class="val">--</div></div></div>
@@ -83,8 +95,9 @@
 
 <script>
     let lc, sc, timer;
+    let isRunning = false; // <--- The Missing Flag
+
     window.onload = () => {
-        // TIGHTER CHART CONFIGURATION
         lc = new Chart(document.getElementById('liveChart'), {
             type: 'line',
             data: { labels: [], datasets: [{ data: [], borderColor: '#3498db', borderWidth: 1.5, pointRadius: 0, tension: 0.1 }] },
@@ -93,7 +106,7 @@
         sc = new Chart(document.getElementById('scatterChart'), {
             type: 'scatter',
             data: { datasets: [] },
-            options: { maintainAspectRatio: false, scales: { x:{grid:{color:'#333'}, title:{display:true, text:'Burstiness (Jitter)'}}, y:{grid:{color:'#333'}, title:{display:true, text:'Rate'}} } }
+            options: { maintainAspectRatio: false, scales: { x:{grid:{color:'#333'}, title:{display:true, text:'Burstiness'}}, y:{grid:{color:'#333'}, title:{display:true, text:'Rate'}} } }
         });
     };
 
@@ -108,25 +121,57 @@
         } else alert(d.msg);
     }
 
+    // --- FIXED TOGGLE FUNCTION ---
     function sim() {
         let btn = document.getElementById('btnSim');
-        btn.innerText = "⏹ Stop & Train"; btn.className = "btn btn-danger w-100";
-        document.getElementById('res').style.display = 'none';
         
-        timer = setInterval(async () => {
-            let d = await (await fetch('/stream_data')).json();
-            if(d.done) { clearInterval(timer); train(); return; }
-            if(d.rate.length) {
-                if(lc.data.labels.length > 100) { lc.data.labels.shift(); lc.data.datasets[0].data.shift(); }
-                d.rate.forEach(r => { lc.data.labels.push(''); lc.data.datasets[0].data.push(r); });
-                lc.update('none');
-            }
-        }, 50);
+        if (!isRunning) {
+            // START SIMULATION
+            isRunning = true;
+            btn.innerText = "⏹ Stop & Train"; 
+            btn.className = "btn btn-danger w-100 fw-bold";
+            document.getElementById('res').style.display = 'none'; // Hide old results
+            document.getElementById('badge').innerText = "Streaming Data...";
+            
+            timer = setInterval(async () => {
+                let d = await (await fetch('/stream_data')).json();
+                
+                // Auto-stop if data runs out
+                if(d.done) { 
+                    sim(); // Call self to toggle off
+                    return; 
+                }
+                
+                // Update Graph
+                if(d.rate.length) {
+                    if(lc.data.labels.length > 100) { lc.data.labels.shift(); lc.data.datasets[0].data.shift(); }
+                    d.rate.forEach(r => { lc.data.labels.push(''); lc.data.datasets[0].data.push(r); });
+                    lc.update('none');
+                }
+            }, 50);
+            
+        } else {
+            // STOP SIMULATION
+            isRunning = false;
+            clearInterval(timer); // Stop the loop
+            btn.innerText = "▶ Restart Sim"; 
+            btn.className = "btn btn-success w-100 fw-bold";
+            document.getElementById('btnRes').disabled = false; // Enable Analyze button
+            document.getElementById('badge').innerText = "Data Ready for AI";
+            
+            // Trigger Training Immediately
+            train(); 
+        }
     }
 
     async function train() {
-        clearInterval(timer);
-        await fetch('/start_training', {method:'POST'});
+        // Ensure simulation is stopped before training
+        if(isRunning) { clearInterval(timer); isRunning = false; }
+        
+        let startRes = await fetch('/start_training', {method:'POST'});
+        let startData = await startRes.json();
+        if(startData.status === 'error') return alert(startData.message);
+
         document.getElementById('overlay').style.display = 'flex';
         
         let poll = setInterval(async () => {
@@ -140,6 +185,8 @@
                 clearInterval(poll);
                 document.getElementById('overlay').style.display = 'none';
                 document.getElementById('res').style.display = 'block';
+                
+                // Fill Data
                 document.getElementById('vThru').innerText = d.result.throughput;
                 document.getElementById('vLat').innerText = d.result.latency;
                 document.getElementById('vLoss').innerText = d.result.loss;
@@ -149,6 +196,7 @@
                 document.getElementById('path').innerText = d.result.folder;
                 document.getElementById('cm').src = "data:image/png;base64,"+d.result.cm_image;
                 
+                // Draw Scatter
                 let clusters = {};
                 d.result.scatter.forEach(p => {
                     if(!clusters[p.c]) clusters[p.c] = [];

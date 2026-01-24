@@ -1,0 +1,2 @@
+Timestamp,Overall_Throughput_Mbps,Overall_Latency_ms,Overall_Loss_Percent,Model_Accuracy,F1_Score,Iterations_to_Converge,Total_Flows
+Sat Jan 24 14:56:56 2026,216.61585565176165,1.7942521128691364,0.12621190414781341,0.9877083062495111,0.9822018523708714,8,1776891
