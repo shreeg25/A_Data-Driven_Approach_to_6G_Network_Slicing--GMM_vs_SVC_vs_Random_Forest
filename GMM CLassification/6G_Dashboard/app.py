@@ -97,10 +97,9 @@ def run_training_task(df, save_root):
             else: cluster_map[c] = "Unknown"
         preds = df['Cluster'].map(cluster_map)
         
-        # --- RESULTS & SAVING ---
+# --- RESULTS & SAVING ---
         update(90, "Finalizing & Saving...")
         
-        # Calculate Metrics
         acc = accuracy_score(df['Label'], preds)
         _, _, f1, _ = precision_recall_fscore_support(df['Label'], preds, average='weighted', zero_division=0)
         
@@ -108,29 +107,59 @@ def run_training_task(df, save_root):
         avg_lat = df['Latency'].mean()
         avg_loss = df['Loss'].mean()
 
-        # Create Run Directory
         run_id = time.strftime("%Y%m%d-%H%M%S")
         save_dir = os.path.join(save_root, run_id)
         os.makedirs(save_dir, exist_ok=True)
 
-        # 1. FIXED CONFUSION MATRIX PLOT
-        fig, ax = plt.subplots(figsize=(6, 5))
-        cm_data = confusion_matrix(df['Label'], preds)
-        labels = sorted(df['Label'].unique())
+        # === PLOT 1: CONFUSION MATRIX (Standard) ===
+        fig_cm, ax_cm = plt.subplots(figsize=(6, 5))
+        cm_data = confusion_matrix(df['Label'], preds, labels=ALL_LABELS)
+        sns.heatmap(cm_data, annot=True, fmt='d', cmap='Blues', 
+                    xticklabels=ALL_LABELS, yticklabels=ALL_LABELS, ax=ax_cm)
+        ax_cm.set_title('Confusion Matrix: Slice Assignment')
+        ax_cm.set_ylabel('True Slice')
+        ax_cm.set_xlabel('Predicted Slice')
+        fig_cm.savefig(os.path.join(save_dir, "confusion_matrix.png"), bbox_inches='tight', facecolor='white', dpi=300)
         
-        sns.heatmap(cm_data, annot=True, fmt='d', cmap='viridis', xticklabels=labels, yticklabels=labels, ax=ax)
-        ax.set_title('Confusion Matrix')
+        # Buffer for Web (CM)
+        buf_cm = io.BytesIO()
+        fig_cm.savefig(buf_cm, format='png', bbox_inches='tight', facecolor='white')
+        plt.close(fig_cm)
+        cm_b64 = base64.b64encode(buf_cm.getvalue()).decode()
+
+        # === PLOT 2: HIGH-QUALITY SCATTER PLOT FOR PAPER ===
+        # We plot Rate vs Burstiness (Log Scale on Y for better separation)
+        fig_sc, ax_sc = plt.subplots(figsize=(8, 6))
         
-        # Save Image to Disk
-        fig.savefig(os.path.join(save_dir, "confusion_matrix.png"), bbox_inches='tight', facecolor='white')
+        # Color mapping
+        colors = {'eMBB': '#e74c3c', 'uRLLC': '#f1c40f', 'mMTC': '#3498db'}
         
-        # Save to Buffer for Web
-        buf = io.BytesIO()
-        fig.savefig(buf, format='png', bbox_inches='tight', facecolor='white')
-        plt.close(fig) 
-        cm_b64 = base64.b64encode(buf.getvalue()).decode()
+        for label in ALL_LABELS:
+            subset = df[df['Label'] == label]
+            if len(subset) > 0:
+                ax_sc.scatter(
+                    subset['Burstiness'], 
+                    subset['Rate'], 
+                    c=colors[label], 
+                    label=label, 
+                    alpha=0.6,    # Transparency helps see density
+                    edgecolors='w', 
+                    linewidth=0.5,
+                    s=60          # Bigger dots
+                )
         
-        # 2. SAVE SEPARATE SUMMARY METRICS CSV
+        ax_sc.set_yscale('log') # <--- CRITICAL: Log scale spreads out the data
+        ax_sc.set_xlabel('Traffic Burstiness (CoV)', fontsize=12)
+        ax_sc.set_ylabel('Source Rate (Mbps) [Log Scale]', fontsize=12)
+        ax_sc.set_title('6G Traffic Clustering: Rate vs. Burstiness', fontsize=14)
+        ax_sc.grid(True, which="both", ls="-", alpha=0.2)
+        ax_sc.legend(title="Network Slice")
+        
+        # Save Scatter for Paper
+        fig_sc.savefig(os.path.join(save_dir, "slice_distribution_paper.png"), bbox_inches='tight', facecolor='white', dpi=300)
+        plt.close(fig_sc)
+
+        # === SAVE CSV METRICS ===
         summary_data = {
             "Timestamp": [time.ctime()],
             "Overall_Throughput_Mbps": [avg_thru],
@@ -142,8 +171,6 @@ def run_training_task(df, save_root):
             "Total_Flows": [rows]
         }
         pd.DataFrame(summary_data).to_csv(os.path.join(save_dir, "summary_metrics.csv"), index=False)
-        
-        # NOTE: Removed the line that saved 'processed_data.csv' or 'classified_data.csv'
         
         TRAINING_STATE['result'] = {
             "throughput": f"{avg_thru:.2f} Mbps",
