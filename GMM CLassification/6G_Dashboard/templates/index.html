@@ -8,20 +8,14 @@
     <style>
         body { background: #0f0f0f; color: #ddd; font-family: system-ui; padding-bottom: 50px; }
         .card { background: #1a1a1a; border: 1px solid #333; }
-        
-        /* Metric Cards */
         .metric-card { background: #222; border-left: 4px solid; padding: 15px; text-align: center; }
         .val { font-size: 1.5rem; font-weight: bold; margin-top: 5px; }
         .c-blue { border-color: #3498db; color: #3498db; }
         .c-yel { border-color: #f1c40f; color: #f1c40f; }
         .c-red { border-color: #e74c3c; color: #e74c3c; }
         .c-grn { border-color: #2ecc71; color: #2ecc71; }
-        
-        /* Loading Overlay */
         #overlay { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.95); z-index: 999; flex-direction: column; justify-content: center; align-items: center; }
         #eta { font-size: 4rem; font-weight: 800; color: #ffc107; text-shadow: 0 0 20px #ffc107; }
-        
-        /* Chart Sizing */
         .chart-box { height: 200px; width: 100%; } 
     </style>
 </head>
@@ -95,7 +89,7 @@
 
 <script>
     let lc, sc, timer;
-    let isRunning = false; // <--- The Missing Flag
+    let isRunning = false;
 
     window.onload = () => {
         lc = new Chart(document.getElementById('liveChart'), {
@@ -121,28 +115,33 @@
         } else alert(d.msg);
     }
 
-    // --- FIXED TOGGLE FUNCTION ---
     function sim() {
         let btn = document.getElementById('btnSim');
         
         if (!isRunning) {
-            // START SIMULATION
+            // START
             isRunning = true;
             btn.innerText = "⏹ Stop & Train"; 
             btn.className = "btn btn-danger w-100 fw-bold";
-            document.getElementById('res').style.display = 'none'; // Hide old results
+            document.getElementById('res').style.display = 'none';
             document.getElementById('badge').innerText = "Streaming Data...";
             
             timer = setInterval(async () => {
                 let d = await (await fetch('/stream_data')).json();
                 
-                // Auto-stop if data runs out
+                // IF DATA FINISHED
                 if(d.done) { 
-                    sim(); // Call self to toggle off
+                    clearInterval(timer); 
+                    isRunning = false;
+                    btn.innerText = "✅ Stream Complete";
+                    btn.className = "btn btn-secondary w-100";
+                    btn.disabled = true; // Disable sim button
+                    document.getElementById('btnRes').disabled = false; // Enable Analyze
+                    document.getElementById('badge').innerText = "Data Stream Complete";
+                    train(); // Auto-trigger training
                     return; 
                 }
                 
-                // Update Graph
                 if(d.rate.length) {
                     if(lc.data.labels.length > 100) { lc.data.labels.shift(); lc.data.datasets[0].data.shift(); }
                     d.rate.forEach(r => { lc.data.labels.push(''); lc.data.datasets[0].data.push(r); });
@@ -151,63 +150,74 @@
             }, 50);
             
         } else {
-            // STOP SIMULATION
+            // MANUAL STOP
             isRunning = false;
-            clearInterval(timer); // Stop the loop
+            clearInterval(timer);
             btn.innerText = "▶ Restart Sim"; 
             btn.className = "btn btn-success w-100 fw-bold";
-            document.getElementById('btnRes').disabled = false; // Enable Analyze button
-            document.getElementById('badge').innerText = "Data Ready for AI";
-            
-            // Trigger Training Immediately
+            document.getElementById('btnRes').disabled = false;
+            document.getElementById('badge').innerText = "Stopped. Ready for AI.";
             train(); 
         }
     }
 
     async function train() {
-        // Ensure simulation is stopped before training
         if(isRunning) { clearInterval(timer); isRunning = false; }
         
         let startRes = await fetch('/start_training', {method:'POST'});
         let startData = await startRes.json();
-        if(startData.status === 'error') return alert(startData.message);
+        
+        if(startData.status === 'error') {
+            alert("Training Error: " + (startData.message || "Is backend busy?"));
+            return;
+        }
 
         document.getElementById('overlay').style.display = 'flex';
         
         let poll = setInterval(async () => {
-            let d = await (await fetch('/get_status')).json();
-            document.getElementById('pBar').style.width = d.progress+'%';
-            document.getElementById('pBar').innerText = d.progress+'%';
-            document.getElementById('eta').innerText = d.eta;
-            document.getElementById('pText').innerText = d.status;
+            try {
+                let d = await (await fetch('/get_status')).json();
+                
+                if(d.status === 'Error') {
+                    clearInterval(poll);
+                    alert("Backend Error: " + d.error);
+                    document.getElementById('overlay').style.display = 'none';
+                    return;
+                }
 
-            if(d.status === 'Complete') {
-                clearInterval(poll);
-                document.getElementById('overlay').style.display = 'none';
-                document.getElementById('res').style.display = 'block';
-                
-                // Fill Data
-                document.getElementById('vThru').innerText = d.result.throughput;
-                document.getElementById('vLat').innerText = d.result.latency;
-                document.getElementById('vLoss').innerText = d.result.loss;
-                document.getElementById('vAcc').innerText = d.result.accuracy;
-                document.getElementById('vF1').innerText = d.result.f1_score;
-                document.getElementById('vIter').innerText = d.result.iterations;
-                document.getElementById('path').innerText = d.result.folder;
-                document.getElementById('cm').src = "data:image/png;base64,"+d.result.cm_image;
-                
-                // Draw Scatter
-                let clusters = {};
-                d.result.scatter.forEach(p => {
-                    if(!clusters[p.c]) clusters[p.c] = [];
-                    clusters[p.c].push({x: p.x, y: p.y});
-                });
-                sc.data.datasets = Object.keys(clusters).map((k,i) => ({
-                    label: `Slice ${k}`, data: clusters[k], backgroundColor: ['#3498db','#e74c3c','#f1c40f'][i%3]
-                }));
-                sc.update();
+                document.getElementById('pBar').style.width = d.progress+'%';
+                document.getElementById('pBar').innerText = d.progress+'%';
+                document.getElementById('eta').innerText = d.eta;
+                document.getElementById('pText').innerText = d.status;
+
+                if(d.status === 'Complete') {
+                    clearInterval(poll);
+                    document.getElementById('overlay').style.display = 'none';
+                    document.getElementById('res').style.display = 'block';
+                    
+                    document.getElementById('vThru').innerText = d.result.throughput;
+                    document.getElementById('vLat').innerText = d.result.latency;
+                    document.getElementById('vLoss').innerText = d.result.loss;
+                    document.getElementById('vAcc').innerText = d.result.accuracy;
+                    document.getElementById('vF1').innerText = d.result.f1_score;
+                    document.getElementById('vIter').innerText = d.result.iterations;
+                    document.getElementById('path').innerText = d.result.folder;
+                    document.getElementById('cm').src = "data:image/png;base64,"+d.result.cm_image;
+                    
+                    let clusters = {};
+                    d.result.scatter.forEach(p => {
+                        if(!clusters[p.c]) clusters[p.c] = [];
+                        clusters[p.c].push({x: p.x, y: p.y});
+                    });
+                    sc.data.datasets = Object.keys(clusters).map((k,i) => ({
+                        label: `Slice ${k}`, data: clusters[k], backgroundColor: ['#3498db','#e74c3c','#f1c40f'][i%3]
+                    }));
+                    sc.update();
+                }
+            } catch(e) {
+                console.error("Polling error", e);
             }
-        }, 200);
+        }, 1000); // Poll every 1 second
     }
 </script>
 </body>
