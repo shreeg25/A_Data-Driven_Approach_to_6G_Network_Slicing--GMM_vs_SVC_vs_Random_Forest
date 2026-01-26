@@ -36,11 +36,15 @@ def run_rf_task(df, save_root):
             rem = max(0.0, est_time - (time.time() - start_t))
             TRAINING_STATE.update({"progress": p, "status": s, "eta": f"{rem:.1f}"})
 
-        # --- STEP 1: ROBUST FEATURE ENGINEERING ---
+        # --- STEP 1: SAFETY CHECK ---
+        # Ensure we have numeric data
+        df = df.apply(pd.to_numeric, errors='coerce').fillna(0)
+
+        # --- STEP 2: FEATURE ENGINEERING ---
         update(10, "Extracting Features...")
         feature_set = ['Rate', 'Size']
         
-        # 1. Burstiness (Safe Division)
+        # Burstiness (Safe Division)
         if 'Jitter' in df.columns: 
             df['Burstiness'] = df['Jitter']
         else: 
@@ -48,13 +52,14 @@ def run_rf_task(df, save_root):
             df['Burstiness'] = df['Rate'].rolling(10).std().fillna(0) / (df['Rate'].rolling(10).mean().fillna(1) + 1e-9)
         feature_set.append('Burstiness')
 
-        # 2. Latency
+        # Latency
         if 'Duration' in df.columns: 
             df['Latency'] = df['Duration'] * 1000 
         else: 
-            df['Latency'] = (1 / (1000 - df['Rate'].clip(upper=990))) * 1000 + (df['Size'] * 0.01)
+            # Fallback calculation
+            df['Latency'] = (1 / (1000 - df['Rate'].clip(upper=990) + 1e-9)) * 1000 + (df['Size'] * 0.01)
 
-        # 3. Loss
+        # Loss
         if 'Loss' in df.columns:
             if df['Loss'].max() < 1.0: df['Loss'] = df['Loss'] * 100 
         else:
@@ -62,11 +67,10 @@ def run_rf_task(df, save_root):
             df['Loss'] = (util**4) * (1 + df['Burstiness']) * 100
             df['Loss'] = df['Loss'].clip(0, 100)
 
-        # *** CRITICAL FIX: CLEAN DATA ***
-        # Random Forest crashes on Infinity/NaN. We fix that here.
+        # Remove Infinity
         df = df.replace([np.inf, -np.inf], 0).fillna(0)
         
-        # --- STEP 2: GROUND TRUTH ---
+        # --- STEP 3: GROUND TRUTH ---
         update(25, "Generating Ground Truth...")
         conditions = [
             (df['Rate'] > 80) & (df['Burstiness'] > 0.1),       # eMBB
@@ -76,7 +80,7 @@ def run_rf_task(df, save_root):
         ALL_LABELS = ['eMBB', 'mMTC', 'uRLLC']
         df['GroundTruth'] = np.select(conditions, ALL_LABELS, default='mMTC')
         
-        # --- STEP 3: TRAIN ---
+        # --- STEP 4: TRAIN ---
         update(40, "Splitting Data...")
         X = df[feature_set].values
         y = df['GroundTruth'].values
@@ -91,10 +95,13 @@ def run_rf_task(df, save_root):
         
         # Feature Importance
         importances = rf_model.feature_importances_
-        burst_idx = feature_set.index('Burstiness')
-        burst_importance = importances[burst_idx]
+        try:
+            burst_idx = feature_set.index('Burstiness')
+            burst_importance = importances[burst_idx]
+        except:
+            burst_importance = 0.0
 
-        # --- STEP 4: PREDICT & EVAL ---
+        # --- STEP 5: PREDICT & EVAL ---
         update(80, "Evaluating...")
         all_preds = rf_model.predict(X_scaled)
         df['Predicted'] = all_preds
@@ -106,7 +113,7 @@ def run_rf_task(df, save_root):
         avg_lat = df['Latency'].mean()
         avg_loss = df['Loss'].mean()
 
-        # --- STEP 5: SAVE RESULTS ---
+        # --- STEP 6: SAVE RESULTS ---
         update(90, "Saving Visuals...")
         run_id = time.strftime("%Y%m%d-%H%M%S")
         save_dir = os.path.join(save_root, run_id)
@@ -117,10 +124,9 @@ def run_rf_task(df, save_root):
         cm_data = confusion_matrix(df['GroundTruth'], df['Predicted'], labels=ALL_LABELS)
         sns.heatmap(cm_data, annot=True, fmt='d', cmap='Greens', xticklabels=ALL_LABELS, yticklabels=ALL_LABELS, ax=ax_cm)
         ax_cm.set_title('Confusion Matrix')
-        fig_cm.savefig(os.path.join(save_dir, "rf_confusion_matrix.png"), bbox_inches='tight', facecolor='white')
-        
         buf_cm = io.BytesIO()
         fig_cm.savefig(buf_cm, format='png', bbox_inches='tight', facecolor='white')
+        fig_cm.savefig(os.path.join(save_dir, "rf_confusion_matrix.png"), bbox_inches='tight', facecolor='white')
         plt.close(fig_cm)
         cm_b64 = base64.b64encode(buf_cm.getvalue()).decode()
 
@@ -154,7 +160,7 @@ def run_rf_task(df, save_root):
         TRAINING_STATE['eta'] = "0.0"
 
     except Exception as e:
-        print(f"CRITICAL ERROR IN THREAD: {e}") # Print error to console
+        print(f"CRITICAL ERROR IN THREAD: {e}") 
         TRAINING_STATE.update({"status": "Error", "error": str(e)})
     finally:
         TRAINING_STATE['busy'] = False
@@ -162,15 +168,13 @@ def run_rf_task(df, save_root):
 @app.route('/')
 def index(): return render_template('index_rf.html')
 
-# ... inside app_rf.py ...
-
 @app.route('/upload', methods=['POST'])
 def upload_file():
     global CURRENT_DATA, SIMULATION_INDEX
     files = request.files.getlist('files')
     chunks = []
     
-    print(f"--- Uploading {len(files)} files ---") # Debug print
+    print(f"--- Uploading {len(files)} files ---") 
 
     for f in files:
         if f.filename == '': continue
@@ -178,45 +182,44 @@ def upload_file():
         f.save(p)
         
         try:
-            # Try reading with different encodings
-            try: 
-                df = pd.read_csv(p, encoding='utf-8-sig')
-            except: 
-                df = pd.read_csv(p, encoding='latin1')
+            try: df = pd.read_csv(p, encoding='utf-8-sig')
+            except: df = pd.read_csv(p, encoding='latin1')
 
             # 1. CLEAN COLUMN NAMES
-            df.columns = df.columns.str.strip().str.lower()
+            # We strip spaces and lower case to match easily
+            df.columns = df.columns.str.strip() 
             
-            # 2. INTELLIGENT RENAMING
+            # 2. STRICT MAPPING for srcRate and srcPktSz
             rename_map = {}
             for col in df.columns:
-                if any(x in col for x in ['rate', 'bps', 'throughput', 'speed']): 
+                c_clean = col.lower()
+                
+                # EXACT MATCHES FIRST
+                if 'srcrate' in c_clean:
                     rename_map[col] = 'Rate'
-                elif any(x in col for x in ['size', 'len', 'packet', 'bytes']): 
+                elif 'srcpktsz' in c_clean:
                     rename_map[col] = 'Size'
-                elif any(x in col for x in ['jitter', 'delay_var']): 
-                    rename_map[col] = 'Jitter'
-                elif any(x in col for x in ['lat', 'dur', 'time']): 
-                    rename_map[col] = 'Duration'
-                elif any(x in col for x in ['loss', 'drop']): 
-                    rename_map[col] = 'Loss'
+                
+                # FALLBACK MATCHES (Only if exact not found)
+                elif 'rate' in c_clean and 'Rate' not in rename_map.values():
+                    rename_map[col] = 'Rate'
+                elif 'size' in c_clean and 'Size' not in rename_map.values():
+                    rename_map[col] = 'Size'
 
-            # Apply renaming
             df = df.rename(columns=rename_map)
             
-            # 3. FORCE NUMERIC CONVERSION (Crucial Fix)
-            # This turns "10 Mbps" -> NaN -> 0.0, and "500" -> 500.0
+            # 3. FORCE NUMERIC (Safety)
             if 'Rate' in df.columns:
                 df['Rate'] = pd.to_numeric(df['Rate'], errors='coerce').fillna(0)
-                
-                # Filter out garbage rows (e.g., headers repeated in middle of CSV)
                 df = df[df['Rate'] > 0] 
 
+                # Ensure Size exists
                 if 'Size' in df.columns:
                     df['Size'] = pd.to_numeric(df['Size'], errors='coerce').fillna(0)
-                
+                else:
+                    df['Size'] = 0.0 # Only fills 0 if srcPktSz was totally missing
+
                 chunks.append(df)
-                print(f" -> Loaded {f.filename}: {len(df)} valid rows.")
                 
         except Exception as e:
             print(f" -> Failed to load {f.filename}: {e}")
@@ -224,14 +227,13 @@ def upload_file():
     if chunks:
         CURRENT_DATA = pd.concat(chunks, ignore_index=True).fillna(0)
         SIMULATION_INDEX = 0
-        print(f"--- TOTAL DATA: {len(CURRENT_DATA)} packets ready. ---")
         return jsonify({"status": "success", "msg": f"Loaded {len(CURRENT_DATA)} packets."})
     
-    return jsonify({"status": "error", "msg": "No valid numeric data found in files."})
+    return jsonify({"status": "error", "msg": "No valid numeric data found."})
+
 @app.route('/stream_data')
 def stream():
     global SIMULATION_INDEX
-    # SAFETY CHECK: If no data, say done immediately
     if CURRENT_DATA is None or len(CURRENT_DATA) == 0: 
         return jsonify({"done": True, "rate": []})
     
@@ -244,9 +246,7 @@ def stream():
 
 @app.route('/start_training', methods=['POST'])
 def start():
-    # Only start if data exists
     if CURRENT_DATA is None: return jsonify({"status": "error", "message": "Load data first!"})
-    
     TRAINING_STATE.update({"busy": True, "progress": 0, "status": "Starting RF...", "result": None})
     threading.Thread(target=run_rf_task, args=(CURRENT_DATA.copy(), app.config['RESULTS_FOLDER']), daemon=True).start()
     return jsonify({"status": "success"})
