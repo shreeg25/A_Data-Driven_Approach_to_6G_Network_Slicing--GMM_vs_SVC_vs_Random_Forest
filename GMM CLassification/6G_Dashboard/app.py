@@ -232,4 +232,4 @@ def start():
 @app.route('/get_status')
 def status(): return jsonify(TRAINING_STATE)
 
-if __name__ == '__main__': app.run(debug=True, port=5000)
+if __name__ == '__main__': app.run(debug=True, port=5000) 
