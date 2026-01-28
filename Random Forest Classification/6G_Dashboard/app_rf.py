@@ -41,16 +41,22 @@ def run_rf_task(df, save_root):
 
         # --- STEP 2: FEATURES ---
         update(10, "Extracting Features...")
+        
+        # 2a. Burstiness
         if 'Jitter' in df.columns: 
             df['Burstiness'] = df['Jitter']
         else: 
+            # Standard calculation
             df['Burstiness'] = df['Rate'].rolling(10).std().fillna(0) / (df['Rate'].rolling(10).mean().fillna(1) + 1e-9)
         
+        # 2b. Latency
         if 'Duration' in df.columns: 
             df['Latency'] = df['Duration'] * 1000 
         else: 
+            # Simulation Formula
             df['Latency'] = (1 / (1000 - df['Rate'].clip(upper=990) + 1e-9)) * 1000 + (df['Size'] * 0.01)
 
+        # 2c. Loss
         if 'Loss' in df.columns:
             if df['Loss'].max() < 1.0: df['Loss'] = df['Loss'] * 100 
         else:
@@ -63,21 +69,17 @@ def run_rf_task(df, save_root):
         # --- STEP 3: GROUND TRUTH ---
         update(25, "Labeling Data...")
         conditions = [
-            (df['Rate'] > 80) & (df['Burstiness'] > 0.1),       
-            (df['Latency'] < 10) & (df['Loss'] < 0.1),          
-            (df['Rate'] <= 80)                                  
+            (df['Rate'] > 80) & (df['Burstiness'] > 0.1),       # eMBB
+            (df['Latency'] < 10) & (df['Loss'] < 0.1),          # uRLLC
+            (df['Rate'] <= 80)                                  # mMTC
         ]
         ALL_LABELS = ['eMBB', 'mMTC', 'uRLLC']
         df['GroundTruth'] = np.select(conditions, ALL_LABELS, default='mMTC')
         
-        # --- STEP 3.5: REALISTIC NOISE ---
-        update(35, "Injecting Noise...")
-        noise_factor = np.random.uniform(0.75, 1.25, len(df))
-        df['Rate_Noisy'] = df['Rate'] * noise_factor
-        noise_factor_2 = np.random.uniform(0.75, 1.25, len(df))
-        df['Burst_Noisy'] = df['Burstiness'] * noise_factor_2
-        
-        feature_cols = ['Rate_Noisy', 'Size', 'Burst_Noisy']
+        # --- (NOISE INJECTION REMOVED) ---
+        # We now train directly on the clean 'Rate', 'Size', 'Burstiness'
+
+        feature_cols = ['Rate', 'Size', 'Burstiness']
 
         # --- STEP 4: TRAIN ---
         update(50, "Training Forest...")
@@ -91,9 +93,10 @@ def run_rf_task(df, save_root):
         rf_model = RandomForestClassifier(n_estimators=100, random_state=42, n_jobs=-1)
         rf_model.fit(X_train, y_train)
         
+        # Feature Importance
         importances = rf_model.feature_importances_
         try:
-            burst_idx = feature_cols.index('Burst_Noisy')
+            burst_idx = feature_cols.index('Burstiness')
             burst_importance = importances[burst_idx]
         except: burst_importance = 0.0
 
@@ -111,31 +114,32 @@ def run_rf_task(df, save_root):
         save_dir = os.path.join(save_root, run_id)
         os.makedirs(save_dir, exist_ok=True)
 
-        # 1. Save Images
+        # 1. Confusion Matrix
         fig_cm, ax_cm = plt.subplots(figsize=(6, 5))
         cm_data = confusion_matrix(df['GroundTruth'], df['Predicted'], labels=ALL_LABELS)
         sns.heatmap(cm_data, annot=True, fmt='d', cmap='Greens', xticklabels=ALL_LABELS, yticklabels=ALL_LABELS, ax=ax_cm)
-        ax_cm.set_title('Confusion Matrix (Noisy Input)')
+        ax_cm.set_title('Confusion Matrix (Clean Data)')
         buf_cm = io.BytesIO()
         fig_cm.savefig(buf_cm, format='png', bbox_inches='tight', facecolor='white')
         fig_cm.savefig(os.path.join(save_dir, "rf_confusion_matrix.png"), bbox_inches='tight', facecolor='white')
         plt.close(fig_cm)
         cm_b64 = base64.b64encode(buf_cm.getvalue()).decode()
 
+        # 2. Scatter Plot (Clean Data)
         fig_sc, ax_sc = plt.subplots(figsize=(8, 6))
         colors = {'eMBB': '#e74c3c', 'uRLLC': '#f1c40f', 'mMTC': '#3498db'}
         for label in ALL_LABELS:
             subset = df[df['Predicted'] == label]
             if len(subset) > 0:
-                ax_sc.scatter(subset['Burst_Noisy'], subset['Rate_Noisy'], c=colors[label], label=label, alpha=0.6, edgecolors='w', linewidth=0.5, s=60)
+                ax_sc.scatter(subset['Burstiness'], subset['Rate'], c=colors[label], label=label, alpha=0.6, edgecolors='w', linewidth=0.5, s=60)
         ax_sc.set_yscale('log')
-        ax_sc.set_xlabel(f'Burstiness (Noisy)')
+        ax_sc.set_xlabel(f'Burstiness')
         ax_sc.set_ylabel('Rate (Mbps)')
         ax_sc.legend()
         fig_sc.savefig(os.path.join(save_dir, "rf_distribution.png"), bbox_inches='tight', facecolor='white', dpi=300)
         plt.close(fig_sc)
 
-        # 2. SAVE SUMMARY CSV (Only Metrics)
+        # 3. SAVE SUMMARY CSV
         summary_data = {
             "Timestamp": [run_id],
             "Accuracy": [acc],
@@ -146,8 +150,6 @@ def run_rf_task(df, save_root):
             "Burst_Importance": [burst_importance]
         }
         pd.DataFrame(summary_data).to_csv(os.path.join(save_dir, "simulation_summary.csv"), index=False)
-        
-        # (REMOVED: processed_data.csv saving line)
 
         TRAINING_STATE['result'] = {
             "throughput": f"{df['Rate'].mean():.2f} Mbps",
@@ -158,7 +160,7 @@ def run_rf_task(df, save_root):
             "extra_metric_name": "BURST IMPORTANCE",
             "extra_metric_val": f"{burst_importance:.3f}",
             "cm_image": cm_b64,
-            "scatter": [{'x': float(r['Burst_Noisy']), 'y': float(r['Rate_Noisy']), 'c': 0 if r['Predicted']=='eMBB' else (1 if r['Predicted']=='uRLLC' else 2)} for i,r in df.sample(min(800, len(df))).iterrows()],
+            "scatter": [{'x': float(r['Burstiness']), 'y': float(r['Rate']), 'c': 0 if r['Predicted']=='eMBB' else (1 if r['Predicted']=='uRLLC' else 2)} for i,r in df.sample(min(800, len(df))).iterrows()],
             "folder": save_dir
         }
         TRAINING_STATE['status'] = "Complete"
@@ -178,14 +180,20 @@ def upload_file():
     global CURRENT_DATA, SIMULATION_INDEX
     files = request.files.getlist('files')
     chunks = []
+    
     print(f"--- Uploading {len(files)} files ---") 
+
     for f in files:
         if f.filename == '': continue
         p = os.path.join(app.config['UPLOAD_FOLDER'], f.filename)
         f.save(p)
+        
         try:
+            # 1. READ
             try: df = pd.read_csv(p, encoding='utf-8-sig')
             except: df = pd.read_csv(p, encoding='latin1')
+
+            # 2. MAP COLUMNS
             df.columns = df.columns.str.strip() 
             rename_map = {}
             for col in df.columns:
@@ -194,28 +202,53 @@ def upload_file():
                 elif 'srcpktsz' in c_clean: rename_map[col] = 'Size'
                 elif 'rate' in c_clean and 'Rate' not in rename_map.values(): rename_map[col] = 'Rate'
                 elif 'size' in c_clean and 'Size' not in rename_map.values(): rename_map[col] = 'Size'
+
             df = df.rename(columns=rename_map)
+            
+            # 3. NUMERIC CONVERSION & BATCHING
             if 'Rate' in df.columns:
                 df['Rate'] = pd.to_numeric(df['Rate'], errors='coerce').fillna(0)
-                df = df[df['Rate'] > 0] 
-                if 'Size' in df.columns: df['Size'] = pd.to_numeric(df['Size'], errors='coerce').fillna(0)
-                else: df['Size'] = 0.0 
+                
+                if 'Size' in df.columns:
+                    df['Size'] = pd.to_numeric(df['Size'], errors='coerce').fillna(0)
+                else:
+                    df['Size'] = 0.0
+
                 chunks.append(df)
-        except Exception as e: print(f" -> Failed {f.filename}: {e}")
+                
+        except Exception as e:
+            print(f" -> Failed to load {f.filename}: {e}")
+
     if chunks:
+        # Loop Infinite Stream Logic
         CURRENT_DATA = pd.concat(chunks, ignore_index=True).fillna(0)
         SIMULATION_INDEX = 0
         return jsonify({"status": "success", "msg": f"Loaded {len(CURRENT_DATA)} packets."})
+    
     return jsonify({"status": "error", "msg": "No valid numeric data found."})
 
 @app.route('/stream_data')
 def stream():
-    global SIMULATION_INDEX
-    if CURRENT_DATA is None or len(CURRENT_DATA) == 0: return jsonify({"done": True, "rate": []})
-    end = min(SIMULATION_INDEX+500, len(CURRENT_DATA))
-    batch = CURRENT_DATA.iloc[SIMULATION_INDEX:end]
-    SIMULATION_INDEX = end
-    is_done = (SIMULATION_INDEX >= len(CURRENT_DATA))
+    global SIMULATION_INDEX, CURRENT_DATA
+    if CURRENT_DATA is None or len(CURRENT_DATA) == 0: 
+        return jsonify({"done": True, "rate": []})
+    
+    batch_size = 200
+    end = SIMULATION_INDEX + batch_size
+    
+    if end < len(CURRENT_DATA):
+        batch = CURRENT_DATA.iloc[SIMULATION_INDEX:end]
+        SIMULATION_INDEX = end
+        is_done = False
+    else:
+        # Loop Logic
+        remaining = CURRENT_DATA.iloc[SIMULATION_INDEX:]
+        needed = batch_size - len(remaining)
+        start_chunk = CURRENT_DATA.iloc[0:needed]
+        batch = pd.concat([remaining, start_chunk])
+        SIMULATION_INDEX = needed 
+        is_done = False 
+    
     return jsonify({"done": is_done, "rate": batch['Rate'].tolist()})
 
 @app.route('/start_training', methods=['POST'])
